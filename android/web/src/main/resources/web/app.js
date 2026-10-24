@@ -3,10 +3,16 @@
 
 const view = document.getElementById('view');
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+/** ← / → 與控制列箭頭一次移動的秒數。 */
+const STEP = 2;
 const svg = (path) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`;
 const ICON = {
   play: svg('M8 5.5v13a.5.5 0 0 0 .77.42l10-6.5a.5.5 0 0 0 0-.84l-10-6.5A.5.5 0 0 0 8 5.5z'),
   pause: svg('M7 5h3.5v14H7zM13.5 5H17v14h-3.5z'),
+  prev: svg('M18 6.5v11a.5.5 0 0 1-.78.41L9.5 12.4V17.5h-2v-11h2v5.1l7.72-5.51A.5.5 0 0 1 18 6.5z'),
+  left: svg('M15.4 7.4 14 6l-6 6 6 6 1.4-1.4L10.8 12z'),
+  right: svg('M8.6 7.4 10 6l6 6-6 6-1.4-1.4L13.2 12z'),
+  settings: svg('M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87a.48.48 0 0 0 .12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.48.48 0 0 0-.12-.61zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z'),
   next: svg('M6 6.5v11a.5.5 0 0 0 .78.41L14.5 12.4V17.5h2v-11h-2v5.1L6.78 6.09A.5.5 0 0 0 6 6.5z'),
   volume: svg('M4 9.5v5h3.5L12 19V5L7.5 9.5zM15 8.5a5 5 0 0 1 0 7l1.4 1.4a7 7 0 0 0 0-9.8zM17.6 5.9a8.6 8.6 0 0 1 0 12.2L19 19.5a10.6 10.6 0 0 0 0-15z'),
   muted: svg('M4 9.5v5h3.5L12 19V5L7.5 9.5zM15.3 9.7l1.4-1.4 2.3 2.3 2.3-2.3 1.4 1.4-2.3 2.3 2.3 2.3-1.4 1.4-2.3-2.3-2.3 2.3-1.4-1.4 2.3-2.3z'),
@@ -72,8 +78,6 @@ async function api(path, { fresh = false, ttl = 10 * 60 * 1000 } = {}) {
 
 function toast(message) {
   const el = document.getElementById('toast');
-  // 全螢幕時只有全螢幕那一層看得到，提示要搬進去。
-  (document.fullscreenElement || document.webkitFullscreenElement || document.body).appendChild(el);
   el.textContent = message;
   el.hidden = false;
   clearTimeout(toast.timer);
@@ -279,36 +283,40 @@ async function playPage(token, id, episodeNumber) {
           <div class="bar" id="bar">
             <div class="seek" id="seek"><div class="track"><div class="buffered" id="buffered"></div><div class="played" id="played"></div><div class="thumb" id="thumb"></div></div><div class="tip" id="tip" hidden></div></div>
             <div class="row">
+              <button class="ic" id="b-prev" title="上一集 (Shift+P)" ${index === 0 ? 'disabled' : ''}>${ICON.prev}</button>
               <button class="ic" id="b-play" title="播放 (K)">${ICON.play}</button>
               <button class="ic" id="b-next" title="下一集 (Shift+N)" ${index >= total - 1 ? 'disabled' : ''}>${ICON.next}</button>
+              <button class="ic step" id="b-back" title="後退 ${STEP} 秒 (←)">${ICON.left}<span>${STEP}s</span></button>
+              <button class="ic step" id="b-fwd" title="快進 ${STEP} 秒 (→)"><span>${STEP}s</span>${ICON.right}</button>
               <span class="vol"><button class="ic" id="b-mute" title="靜音 (M)">${ICON.volume}</button><input type="range" id="b-vol" min="0" max="1" step="0.01" aria-label="音量"></span>
               <span class="time" id="b-time">0:00 / 0:00</span>
               <span class="grow"></span>
-              <span class="ep-label">第 ${index + 1} / ${total} 集</span>
+              <button class="ic text" id="b-eps" title="選集">第 ${index + 1} / ${total} 集</button>
               <button class="ic text" id="b-rate" title="倍速 (&lt; &gt;)">${settings.rate}×</button>
               <button class="ic" id="b-dm" title="彈幕 (C)">${ICON.danmaku}</button>
+              <button class="ic" id="b-set" title="設定">${ICON.settings}</button>
               <button class="ic" id="b-fs" title="全螢幕 (F)">${ICON.fullscreen}</button>
+            </div>
+            <div class="panel eps-panel" id="p-eps" hidden>
+              <form class="jump" id="jump"><span>選集 · 共 ${total} 集</span><input type="number" id="jump-to" min="1" max="${total}" placeholder="集數" aria-label="跳到第幾集"><button class="btn">跳轉</button></form>
+              <div id="bar-episodes"></div>
+            </div>
+            <div class="panel set-panel" id="p-set" hidden>
+              <label>畫質 <select id="quality">${[1080, 720, 480].map((q) => `<option value="${q}" ${q === settings.quality ? 'selected' : ''}>${q}P</option>`).join('')}</select></label>
+              <label>倍速 <select id="rate">${RATES.map((r) => `<option value="${r}" ${r === settings.rate ? 'selected' : ''}>${r}×</option>`).join('')}</select></label>
+              <label>彈幕 <select id="dm">${[['full', '全螢幕'], ['top', '上方'], ['off', '關閉']].map(([v, t]) => `<option value="${v}" ${v === settings.danmaku ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+              <label>自動連播 <input type="checkbox" id="auto" ${settings.autoNext ? 'checked' : ''}></label>
             </div>
           </div>
         </div>
-        <h1 class="player-title"><a href="#/detail/${id}">${esc(s.title)}</a> · 第 ${index + 1} 集</h1>
-        <div class="controls">
-          <button class="btn" id="prev" ${index === 0 ? 'disabled' : ''}>‹ 上一集</button>
-          <button class="btn" id="next" ${index >= total - 1 ? 'disabled' : ''}>下一集 ›</button>
-          <span class="spacer"></span>
-          <label>畫質 <select id="quality">${[1080, 720, 480].map((q) => `<option value="${q}" ${q === settings.quality ? 'selected' : ''}>${q}P</option>`).join('')}</select></label>
-          <label>倍速 <select id="rate">${RATES.map((r) => `<option value="${r}" ${r === settings.rate ? 'selected' : ''}>${r}×</option>`).join('')}</select></label>
-          <label>彈幕 <select id="dm">${[['full', '全螢幕'], ['top', '上方'], ['off', '關閉']].map(([v, t]) => `<option value="${v}" ${v === settings.danmaku ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
-          <label><input type="checkbox" id="auto" ${settings.autoNext ? 'checked' : ''}> 自動連播</label>
-          <button class="btn" id="fs">⛶ 全螢幕</button>
-        </div>
+        <h1 class="player-title"><a href="#/detail/${id}">${esc(s.title)}</a> · 第 ${index + 1} / ${total} 集</h1>
       </div>
       <aside class="side">
         <h2>選集 <span class="hint">共 ${total} 集</span></h2>
         <div id="episodes"></div>
         <div class="keys">
           <kbd>K</kbd>/<kbd>空白</kbd> 播放/暫停　<kbd>M</kbd> 靜音<br>
-          <kbd>J</kbd><kbd>L</kbd> 倒退/快轉 10 秒　<kbd>←</kbd><kbd>→</kbd> 5 秒<br>
+          <kbd>←</kbd><kbd>→</kbd> 後退/快進 ${STEP} 秒　<kbd>J</kbd><kbd>L</kbd> 10 秒<br>
           <kbd>↑</kbd><kbd>↓</kbd> 音量　<kbd>0</kbd>–<kbd>9</kbd> 跳到 0–90%<br>
           <kbd>F</kbd> 全螢幕　<kbd>C</kbd> 彈幕　<kbd>I</kbd> 子母畫面<br>
           <kbd>&lt;</kbd><kbd>&gt;</kbd> 倍速　<kbd>,</kbd><kbd>.</kbd> 逐格（暫停時）<br>
@@ -370,7 +378,7 @@ async function playPage(token, id, episodeNumber) {
   video.addEventListener('click', () => {
     const before = pausedAtPress;
     pausedAtPress = null;
-    if (before === null || !video.currentSrc) return;
+    if (before === null || !video.currentSrc || menuOpenAtPress) return;
     setTimeout(() => {
       if (video.paused !== before) return;
       togglePlay();
@@ -388,19 +396,22 @@ async function playPage(token, id, episodeNumber) {
   // ---- 自訂控制列（取代瀏覽器原生控制列，才能在播放中自動淡出） ----
   const bar = $('#bar'), seek = $('#seek'), tip = $('#tip');
   const playButton = $('#b-play'), muteButton = $('#b-mute'), volumeInput = $('#b-vol'), timeLabel = $('#b-time');
+  // 先拿好引用：換集時舊 <video> 還會發幾個事件，那時頁面已經換掉，用 id 現查會拿到 null。
+  const playedBar = $('#played'), thumb = $('#thumb'), bufferedBar = $('#buffered');
+  const rateButton = $('#b-rate'), danmakuButton = $('#b-dm'), fullscreenButton = $('#b-fs');
   let dragging = false, dragRatio = 0, idleTimer = 0;
   const ratioAt = (clientX) => { const r = seek.getBoundingClientRect(); return Math.min(1, Math.max(0, (clientX - r.left) / r.width)); };
   function paintProgress() {
     const duration = video.duration || 0;
     const time = dragging ? dragRatio * duration : video.currentTime;
     const ratio = duration ? time / duration : 0;
-    $('#played').style.width = `${ratio * 100}%`;
-    $('#thumb').style.left = `${ratio * 100}%`;
+    playedBar.style.width = `${ratio * 100}%`;
+    thumb.style.left = `${ratio * 100}%`;
     let buffered = 0;
     for (let i = 0; i < video.buffered.length; i++) {
       if (video.buffered.start(i) <= video.currentTime + 0.5) buffered = Math.max(buffered, video.buffered.end(i));
     }
-    $('#buffered').style.width = `${duration ? (buffered / duration) * 100 : 0}%`;
+    bufferedBar.style.width = `${duration ? (buffered / duration) * 100 : 0}%`;
     timeLabel.textContent = `${fmtTime(time)} / ${fmtTime(duration)}`;
   }
   function paintPlay() {
@@ -412,12 +423,13 @@ async function playPage(token, id, episodeNumber) {
     muteButton.innerHTML = silent ? ICON.muted : ICON.volume;
     volumeInput.value = video.muted ? 0 : video.volume;
   }
-  const paintRate = () => { $('#b-rate').textContent = `${video.playbackRate}×`; };
-  const paintDanmaku = () => $('#b-dm').classList.toggle('off', store.settings.danmaku === 'off');
+  const paintRate = () => { rateButton.textContent = `${video.playbackRate}×`; };
+  const paintDanmaku = () => danmakuButton.classList.toggle('off', store.settings.danmaku === 'off');
   const paintFullscreen = () => {
     const full = !!(document.fullscreenElement || document.webkitFullscreenElement);
-    $('#b-fs').innerHTML = full ? ICON.exitFullscreen : ICON.fullscreen;
-    $('#b-fs').title = full ? '結束全螢幕 (F)' : '全螢幕 (F)';
+    document.body.classList.toggle('fs', full);
+    fullscreenButton.innerHTML = full ? ICON.exitFullscreen : ICON.fullscreen;
+    fullscreenButton.title = full ? '結束全螢幕 (F)' : '全螢幕 (F)';
   };
   ['timeupdate', 'progress', 'durationchange', 'seeked'].forEach((type) => video.addEventListener(type, paintProgress));
   video.addEventListener('play', () => { paintPlay(); wake(); });
@@ -474,24 +486,53 @@ async function playPage(token, id, episodeNumber) {
     stage.classList.remove('idle');
     clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      if (!video.paused && !dragging && !bar.matches(':hover')) stage.classList.add('idle');
+      if (!video.paused && !dragging && !menuOpen() && !bar.matches(':hover')) stage.classList.add('idle');
     }, 2500);
   }
   stage.addEventListener('pointermove', wake);
   stage.addEventListener('pointerdown', wake);
-  stage.addEventListener('pointerleave', () => { if (!video.paused && !dragging) { clearTimeout(idleTimer); stage.classList.add('idle'); } });
+  stage.addEventListener('pointerleave', () => { if (!video.paused && !dragging && !menuOpen()) { clearTimeout(idleTimer); stage.classList.add('idle'); } });
   bar.addEventListener('pointerleave', wake);
 
-  $('#prev').addEventListener('click', () => go(index - 1));
-  $('#next').addEventListener('click', () => go(index + 1));
+  // ---- 控制列上的選集 / 設定面板 ----
+  const panels = { eps: $('#p-eps'), set: $('#p-set') };
+  const menuOpen = () => Object.values(panels).some((p) => !p.hidden);
+  function openPanel(name) {
+    for (const [key, panel] of Object.entries(panels)) panel.hidden = key === name ? !panel.hidden : true;
+    $('#b-eps').classList.toggle('on', !panels.eps.hidden);
+    $('#b-set').classList.toggle('on', !panels.set.hidden);
+    wake();
+  }
+  const closePanels = () => { if (menuOpen()) openPanel(null); };
+  episodeGrid($('#bar-episodes'), id, total, index, (i) => `#/play/${id}/${i + 1}`);
+  $('#b-eps').addEventListener('click', () => {
+    openPanel('eps');
+    if (!panels.eps.hidden) $('#bar-episodes .ep.current')?.scrollIntoView({ block: 'center' });
+  });
+  $('#b-set').addEventListener('click', () => openPanel('set'));
+  $('#jump').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const n = parseInt($('#jump-to').value, 10);
+    if (n >= 1 && n <= total) go(n - 1);
+    else toast(`請輸入 1–${total}`);
+  });
+  // 點控制列以外的地方就收起面板；這一下點在畫面上時只收面板、不切換播放（同 YouTube）。
+  let menuOpenAtPress = false;
+  const onOutside = (e) => { if (!bar.contains(e.target)) closePanels(); };
+  video.addEventListener('pointerdown', () => { menuOpenAtPress = menuOpen(); }, true);
+  document.addEventListener('pointerdown', onOutside);
+  $('#b-prev').addEventListener('click', () => go(index - 1));
+  $('#b-back').addEventListener('click', () => seekBy(-STEP));
+  $('#b-fwd').addEventListener('click', () => seekBy(STEP));
   $('#quality').addEventListener('change', (e) => { store.setting('quality', +e.target.value); load(true); });
   $('#rate').addEventListener('change', (e) => { store.setting('rate', +e.target.value); video.playbackRate = +e.target.value; });
   $('#dm').addEventListener('change', (e) => { store.setting('danmaku', e.target.value); danmaku.mode(e.target.value); paintDanmaku(); });
   $('#auto').addEventListener('change', (e) => store.setting('autoNext', e.target.checked));
-  $('#fs').addEventListener('click', toggleFullscreen);
+  // 全螢幕的是整個頁面（不是 stage）：換集時播放頁整個重畫，全螢幕也不會因此跳出；
+  // 畫面鋪滿由 body.fs 的樣式負責。
   function toggleFullscreen() {
     if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
-    else (stage.requestFullscreen || stage.webkitRequestFullscreen).call(stage);
+    else { const root = document.documentElement; (root.requestFullscreen || root.webkitRequestFullscreen).call(root); }
   }
 
   // 快捷鍵對齊 YouTube：K/空白、J/L、←/→、↑/↓、M、F、C、I、0–9、Home/End、,/.、</>、Shift+N/P。
@@ -527,8 +568,9 @@ async function playPage(token, id, episodeNumber) {
       ' ': togglePlay, k: togglePlay, K: togglePlay,
       j: () => seekBy(-10), J: () => seekBy(-10),
       l: () => seekBy(10), L: () => seekBy(10),
-      ArrowLeft: () => seekBy(-5),
-      ArrowRight: () => seekBy(5),
+      ArrowLeft: () => seekBy(-STEP),
+      ArrowRight: () => seekBy(STEP),
+      Escape: closePanels,
       ArrowUp: () => volumeBy(0.05),
       ArrowDown: () => volumeBy(-0.05),
       m: () => { video.muted = !video.muted; toast(video.muted ? '靜音' : '取消靜音'); },
@@ -563,6 +605,7 @@ async function playPage(token, id, episodeNumber) {
     window.removeEventListener('keydown', onKey, true);
     document.removeEventListener('fullscreenchange', paintFullscreen);
     document.removeEventListener('webkitfullscreenchange', paintFullscreen);
+    document.removeEventListener('pointerdown', onOutside);
     clearTimeout(idleTimer);
     danmaku.stop();
     video.removeAttribute('src');
@@ -703,6 +746,11 @@ function route() {
   if (player) { player(); player = null; }
   const parts = location.hash.replace(/^#\/?/, '').split('/').map((p) => { try { return decodeURIComponent(p); } catch { return p; } });
   const [name = '', ...rest] = parts;
+  // 全螢幕是整頁的；離開播放頁就一併結束。
+  if (name !== 'play') {
+    document.body.classList.remove('fs');
+    if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  }
   document.title = '紅果TV';
   document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === (name || 'home')));
   if (name !== 'search') $('#search-input').value = '';

@@ -111,7 +111,8 @@ h2 { font-size: 19px; margin: 0; }
 .player-page { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 24px; align-items: start; }
 .stage { position: relative; background: #000; border-radius: var(--radius); overflow: hidden; aspect-ratio: 16 / 9; }
 .stage video { position: absolute; inset: 0; width: 100%; height: 100%; background: #000; }
-.stage:fullscreen, .stage:-webkit-full-screen { border-radius: 0; aspect-ratio: auto; width: 100vw; height: 100vh; }
+body.fs .stage { position: fixed; inset: 0; z-index: 200; border-radius: 0; aspect-ratio: auto; }
+body.fs { overflow: hidden; }
 .stage .status {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px;
   color: #f2ede4; background: rgba(0, 0, 0, .55); text-align: center; padding: 24px; pointer-events: none;
@@ -168,7 +169,32 @@ h2 { font-size: 19px; margin: 0; }
 .vol:hover input, .vol input:focus-visible { width: 80px; opacity: 1; margin: 0 8px 0 2px; }
 .bar .time { margin-left: 8px; font-size: 13px; color: #eee; font-variant-numeric: tabular-nums; }
 .bar .grow { flex: 1; }
-.bar .ep-label { font-size: 13px; color: #ddd; margin-right: 6px; }
+.ic.on { background: rgba(255, 255, 255, .14); opacity: 1; }
+.ic.step { width: auto; padding: 0 6px; gap: 0; font-size: 12px; font-weight: 600; }
+.ic.step svg { width: 20px; height: 20px; }
+
+/* 控制列上方的彈出面板（選集 / 設定），全螢幕時也能用。 */
+.panel {
+  position: absolute; right: 12px; bottom: calc(100% - 24px); z-index: 4;
+  background: rgba(22, 24, 29, .96); border: 1px solid rgba(255, 255, 255, .1); border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .5); padding: 14px; color: var(--text);
+}
+.eps-panel { width: min(460px, calc(100% - 24px)); max-height: 300px; overflow: auto; }
+body.fs .eps-panel { max-height: 60vh; }
+.eps-panel .jump { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px; }
+.eps-panel .jump span { flex: 1; color: var(--muted); }
+.eps-panel .jump input {
+  width: 84px; padding: 6px 10px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line); outline: none;
+}
+.eps-panel .jump .btn { padding: 6px 14px; }
+.eps-panel .chips { margin-bottom: 10px; }
+.eps-panel .chip { padding: 3px 10px; font-size: 12px; }
+.eps-panel .episodes { grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 6px; }
+.eps-panel .ep { padding: 6px 0; font-size: 13px; }
+.set-panel { display: grid; gap: 12px; min-width: 220px; }
+.set-panel label { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 14px; }
+.set-panel select { padding: 5px 10px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line); }
+.set-panel input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .danmaku { position: absolute; left: 0; right: 0; top: 0; height: 100%; overflow: hidden; pointer-events: none; }
 .danmaku.top { height: 30%; }
 .danmaku span {
@@ -176,10 +202,6 @@ h2 { font-size: 19px; margin: 0; }
   text-shadow: 0 0 2px #000, 0 0 4px rgba(0, 0, 0, .8); will-change: transform;
   font-size: var(--dm-size, 22px); opacity: var(--dm-opacity, .9);
 }
-.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; }
-.controls select, .controls .btn { padding: 7px 14px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); }
-.controls label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 14px; }
-.controls .spacer { flex: 1; }
 .player-title { margin: 16px 0 4px; font-size: 20px; }
 .side { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; max-height: calc(100vh - 120px); overflow: auto; position: sticky; top: 80px; }
 .side h2 { font-size: 16px; margin-bottom: 12px; }
@@ -193,7 +215,7 @@ kbd { background: var(--surface-2); border: 1px solid var(--line); border-radius
 .skeleton { background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 .toast {
-  position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%); z-index: 50;
+  position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%); z-index: 300;
   background: var(--surface-2); border: 1px solid var(--line); padding: 10px 18px; border-radius: 999px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, .4);
 }
