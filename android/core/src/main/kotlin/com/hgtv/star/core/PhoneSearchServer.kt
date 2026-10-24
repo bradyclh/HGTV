@@ -36,8 +36,10 @@ class PhoneSearchServer(
     }
     private val stopped=AtomicBoolean(false)
     private val consumed=AtomicBoolean(false)
-    private val localAddress=InetAddress.getByName(address).also { require(it.isLoopbackAddress || it.isSiteLocalAddress) }.hostAddress
-    private val listener=ServerSocket(0,4).apply { soTimeout=500 }
+    private val local=InetAddress.getByName(address).also { require(it.isLoopbackAddress || it.isSiteLocalAddress) }
+    private val localAddress=local.hostAddress
+    // 只绑在这块网卡上，跟另外两个本机页面一致；不对 0.0.0.0（含公网 / VPN 接口）开放。
+    private val listener=ServerSocket(0,4,local).apply { soTimeout=500 }
     private val deadline=System.nanoTime()+ttlMillis.coerceIn(1,300_000)*1_000_000
     private val token=ByteArray(16).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it.toInt() and 255) }
     private val host="$localAddress:${listener.localPort}"
