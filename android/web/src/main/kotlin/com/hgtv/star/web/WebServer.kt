@@ -89,6 +89,13 @@ private class Api(private val repository: ContentRepository, private val device:
                 "related" -> repository.related(id("id"),param("title")).let { works ->
                     JSONObject().put("items",works.items.json()).put("seasons",works.seasons.json()) }
                 "danmaku" -> danmaku.snapshot(id("vid"),id("series"))
+                // 自動連播的預先載入：下一集的地址、加密索引與開頭片段在背景準備好，彈幕也先開始抓。
+                "prefetch" -> {
+                    val vid=id("vid")
+                    videos.prefetch(vid,param("q").toIntOrNull()?.coerceIn(360,2160) ?: 1080)
+                    param("series").takeIf { it.matches(idPattern) }?.let { danmaku.snapshot(vid,it) }
+                    JSONObject().put("ok",true)
+                }
                 else -> throw HttpError(404,"找不到介面")
             }
         } catch(problem: HttpError) {

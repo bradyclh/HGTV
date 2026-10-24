@@ -355,6 +355,14 @@ async function playPage(token, id, episodeNumber) {
   let lastSave = 0;
   const save = () => { if (video.duration) store.saveProgress(s, index, video.currentTime, video.duration, total); };
   video.addEventListener('timeupdate', () => { if (Date.now() - lastSave > 5000) { lastSave = Date.now(); save(); } });
+  // 自動連播的預先載入：這集播了一小段之後，讓伺服器先把下一集的開頭準備好（短劇一集常常只有一兩分鐘）。
+  let prefetched = false;
+  video.addEventListener('timeupdate', () => {
+    if (prefetched || !store.settings.autoNext || index >= total - 1 || !video.duration) return;
+    if (video.currentTime < Math.min(10, video.duration * 0.3)) return;
+    prefetched = true;
+    fetch(`/api/prefetch?vid=${detail.episodes[index + 1]}&series=${id}&q=${store.settings.quality}`).catch(() => {});
+  });
   video.addEventListener('pause', save);
   video.addEventListener('ended', () => {
     save();
