@@ -31,7 +31,9 @@ data class AppUpdate(
     val downloadUrl get() = "$RELEASES/download/$tag/$fileName"
 
     companion object {
-        const val REPOSITORY = "pan8664716/HGTV"
+        // 指向本 fork：上游账号或发布流程失守时，新版不会自动推到本 fork 的安装上。
+        // 本 fork 不发 Release 时 latest() 返回「尚无可用的更新版本」，等同关闭自动更新。
+        const val REPOSITORY = "bradyclh/HGTV"
         const val PACKAGE = "com.hgtv.star"
         const val RELEASES = "https://github.com/$REPOSITORY/releases"
         /** 元数据地址：Release 的 latest 附件，改仓库只改 [REPOSITORY]。 */
@@ -61,7 +63,7 @@ data class AppUpdate(
                 notes = root.optString("notes").take(MAX_NOTES)
             )
             if (update.versionCode !in 1..Int.MAX_VALUE.toLong()) throw IOException("更新信息里的版本号不可用")
-            if (update.minSdk !in 26..100) throw IOException("更新信息里的最低系统版本不可用")
+            if (update.minSdk !in 19..100) throw IOException("更新信息里的最低系统版本不可用")
             if (!VERSION.matches(update.versionName)) throw IOException("更新信息里的版本名不可用")
             if (!TAG.matches(update.tag)) throw IOException("更新信息里的版本标签不可用")
             if (!APK.matches(update.fileName)) throw IOException("更新信息里的安装包名不可用")
