@@ -326,7 +326,38 @@ async function playPage(token, id, episodeNumber) {
     if (store.settings.autoNext && index < total - 1) go(index + 1);
     else if (index >= total - 1) { status.hidden = false; status.textContent = '全劇終'; }
   });
-  video.addEventListener('dblclick', (e) => { e.preventDefault(); toggleFullscreen(); });
+  // 點畫面播放／暫停（同 YouTube）。底部原生控制列的點擊也會落在 <video> 上，那一條要排除；
+  // 有些瀏覽器（Firefox）本身就會在點擊時切換，先記下按下時的狀態，原生沒切換才由這裡切換。
+  let pausedAtPress = null, pausedBeforeClicks = null;
+  video.addEventListener('pointerdown', (e) => {
+    const rect = video.getBoundingClientRect();
+    pausedAtPress = e.button === 0 && e.clientY < rect.bottom - 56 ? video.paused : null;
+    if (e.detail <= 1) pausedBeforeClicks = pausedAtPress;
+  });
+  // 雙擊＝全螢幕；兩次單擊的切換排在前面，這裡最後把播放狀態還原成雙擊之前的樣子。
+  video.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    toggleFullscreen();
+    const before = pausedBeforeClicks;
+    setTimeout(() => { if (before !== null && video.paused !== before) togglePlay(); }, 0);
+  });
+  video.addEventListener('click', () => {
+    const before = pausedAtPress;
+    pausedAtPress = null;
+    if (before === null || !video.currentSrc) return;
+    setTimeout(() => {
+      if (video.paused !== before) return;
+      togglePlay();
+      flash(before ? '▶' : '❚❚');
+    }, 0);
+  });
+  function flash(symbol) {
+    const el = document.createElement('div');
+    el.className = 'flash';
+    el.textContent = symbol;
+    stage.appendChild(el);
+    el.addEventListener('animationend', () => el.remove());
+  }
 
   $('#prev').addEventListener('click', () => go(index - 1));
   $('#next').addEventListener('click', () => go(index + 1));
