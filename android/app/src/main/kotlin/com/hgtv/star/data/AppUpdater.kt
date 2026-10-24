@@ -128,7 +128,7 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
         main.postDelayed(poll, 8000)
         if (permissionRequested) {
             permissionRequested = false
-            if (activity.packageManager.canRequestPackageInstalls()) install()
+            if (canInstallPackages()) install()
             else {
                 status = "安装权限未开启，可在设置里再次安装"
                 openStatus(anchor, "关闭", startDownload = false)
@@ -329,18 +329,23 @@ class AppUpdater(private val activity: Activity, private val idle: () -> Boolean
             version != update.versionCode ||
             candidate.versionName != update.versionName ||
             version <= BuildConfig.VERSION_CODE ||
-            candidate.applicationInfo?.minSdkVersion != update.minSdk ||
+            // ApplicationInfo.minSdkVersion 要 API 24；23 上跳过这一项，sha256 / 包名 / 版本 / 签名照常比对。
+            (Build.VERSION.SDK_INT >= 24 && candidate.applicationInfo?.minSdkVersion != update.minSdk) ||
             signers(installed).isEmpty() ||
             signers(installed) != signers(candidate)
         ) throw IOException("新版包名、版本或签名不匹配，已阻止安装")
     }
+
+    /** 26 以前「未知来源」是系统级开关，没有逐应用授权，直接拉起安装界面即可。 */
+    private fun canInstallPackages() =
+        Build.VERSION.SDK_INT < 26 || activity.packageManager.canRequestPackageInstalls()
 
     private fun install() {
         val update = available ?: return
         if (busy || !active || !ready) return
         work({ validateApk(update) }) {
             try {
-                if (!activity.packageManager.canRequestPackageInstalls()) {
+                if (!canInstallPackages()) {
                     permissionRequested = true
                     activity.startActivity(
                         Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}"))

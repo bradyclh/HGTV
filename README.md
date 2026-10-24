@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/preview/app-logo.png" width="192" alt="红果TV 应用图标"></p>
 
-# 红果TV（Android TV 4.4+）
+# 红果TV（Android TV 6.0+）
 
 面向 Android TV 的短剧客户端：单 APK、Kotlin + ExoPlayer，装到电视上无需登录联网即用。
 
@@ -78,7 +78,7 @@ adb install -r HGTV_1.1.6.apk    # 文件名：<标识>_<版本号>.apk
 
 ### 依赖
 
-- Android TV 或 Android 4.4（API 19）及以上的设备。
+- Android TV 或 Android 6.0（API 23）及以上的设备（含 Fire TV）。
 - APK 内置 ARM32 / ARM64 / x86 的崩溃采集库，其余为纯 JVM 代码；视频解码能力取决于设备，
   遇到花屏、绿屏或音画不同步可在设置里改用软件解码。
 - 换用别的签名重建后不能覆盖安装本仓库发布密钥签名的 APK（卸载会清除本机记录）。

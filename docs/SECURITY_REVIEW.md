@@ -51,6 +51,7 @@
 
 ## 五、限制
 
-- 本機沒有 Android SDK，`:app` 沒有編譯過，`SessionPrefs` 和 build 設定的修改也沒有在實機上驗證過。
+- 上游原始碼原本建不起來（程式碼用 `androidx.media3`，gradle 卻宣告舊版 `exoplayer 2.19.1`），fork 已改用 media3 1.4.1。`:core:test`、`:app:lintDebug`、`:app:assembleDebug` 都通過，但 `SessionPrefs` 和 build 設定的修改還沒在實機上驗證過。
+- `minSdk` 從 19 調到 23（Android 6.0）：`SessionPrefs` 在所有可安裝的裝置上都會加密；原本 83 處 API 21～26 的 lint error 降到 0。Android 4.4～5.1 的裝置不再支援。
 - 公開原始碼缺少 APK 裡的登入狀態維持（keep-alive）／`SessionBootstrap` 和 QR 登入等 1.1.8.2 之後的功能，所以這個 fork 建出來的功能會比 1.2.3 少。
 - jadx 有 7 個方法沒能反編譯，那幾處的行為無法確認。

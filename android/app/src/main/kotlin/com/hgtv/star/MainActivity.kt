@@ -707,7 +707,12 @@ class MainActivity: Activity() {
             root.post { syncHeaderState() }
         }
         connectivity=getSystemService(ConnectivityManager::class.java)
-        runCatching { connectivity.registerDefaultNetworkCallback(networkCallback); networkRegistered=true }
+        // 默认网络回调要 API 24；23 上退回「任一可上网网络」的变化，回调里只是重新判断状态，效果一致。
+        runCatching {
+            if(android.os.Build.VERSION.SDK_INT>=24) connectivity.registerDefaultNetworkCallback(networkCallback)
+            else connectivity.registerNetworkCallback(android.net.NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),networkCallback)
+            networkRegistered=true
+        }
         favoriteMonitor=FavoriteMonitor(library,repository) { refreshFavoriteLabels() }
         appUpdater=AppUpdater(this) {
             // 「空闲」= 在前台、不在播放界面、没有模态框。播放中与弹窗里绝不打扰。

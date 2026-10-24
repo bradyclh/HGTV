@@ -9,7 +9,8 @@ android {
     compileSdk = 36
     defaultConfig {
         applicationId = "com.hgtv.star"
-        minSdk = 19
+        // 23 起 Android Keystore 才有 AES-GCM，SessionPrefs 的登录凭证加密在所有设备上都生效。
+        minSdk = 23
         // 钉在 29：这是**传统存储模式**（`requestLegacyExternalStorage`）还能生效的最高版本，
         // 而传统模式下一个 `WRITE_EXTERNAL_STORAGE` 就等于整个 `/sdcard` 的读写权——
         // 会话镜像因此可以写自建的 `/sdcard/.hgtv/`（卸载不删），重装后直接恢复登录。
@@ -30,20 +31,17 @@ android {
         }
     }
     buildTypes {
-        // 两个构建类型都要钉主 dex：minSdk 19 时 Dalvik 在 MultiDex.install 之前只能看到 classes.dex，
-        // 被 R8 改名/裁剪过的启动链路一旦落到第二个 dex，4.4 上会直接 NoClassDefFoundError。
         // debug 也用发布签名：这样 `adb install -r` 能在「线上正式包」和「本地调试包」之间
         // 直接覆盖安装，不必先卸载（卸载会清掉本机记录、收藏、登录态，验证时要重新走一遍）。
         // 代价：debug 包与正式包共用同一个签名密钥，不能再靠签名区分渠道；本项目自签分发，
         // 没有别的渠道，因此没有影响。密钥缺失时（例如没配 keystore.properties 的机器）
         // 回落到默认 debug 签名，构建不会因此失败。
         getByName("debug") {
-            multiDexKeepProguard = file("multidex-keep.pro")
             signingConfig = runCatching { signingConfigs.getByName("delivery") }
                 .getOrNull()?.takeIf { it.storeFile?.exists() == true && it.storePassword != null && it.keyAlias != null }
                 ?: signingConfigs.getByName("debug")
         }
-        getByName("release") { multiDexKeepProguard = file("multidex-keep.pro"); signingConfig = signingConfigs.getByName("delivery"); isMinifyEnabled = true; proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro") } }
+        getByName("release") { signingConfig = signingConfigs.getByName("delivery"); isMinifyEnabled = true; proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro") } }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_1_8; targetCompatibility = JavaVersion.VERSION_1_8 }
     kotlinOptions { jvmTarget = "1.8" }
     lint {
@@ -60,7 +58,6 @@ android {
 
 dependencies {
     implementation("androidx.core:core:1.8.0")
-    implementation("androidx.multidex:multidex:2.0.1")
     implementation("androidx.vectordrawable:vectordrawable:1.1.0")
     implementation("androidx.media:media:1.6.0")
     implementation("com.google.zxing:core:3.4.1")

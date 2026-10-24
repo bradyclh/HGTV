@@ -75,7 +75,8 @@ class ArtworkLoader(context: Context) {
         Thread(runnable, "hgtv-artwork").apply { priority = Thread.NORM_PRIORITY - 1 }
     }
     private val signal = Object()
-    private val pending = PriorityQueue<Job>(compareBy<Job> { it.priority }.thenBy { it.order })
+    // 只传比较器的构造要 API 24；带初始容量的版本自 API 1 起就有。
+    private val pending = PriorityQueue<Job>(11, compareBy<Job> { it.priority }.thenBy { it.order })
     private val jobs = mutableMapOf<Key, Job>()
     private val bindings = WeakHashMap<ImageView, Binding>()
     private var owner = 0L
