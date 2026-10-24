@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>紅果TV</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23ff5a4e'/%3E%3Cpath d='M24 18l24 14-24 14z' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/">紅果TV</a>
+  <nav class="nav">
+    <a href="#/" data-nav="home">首頁</a>
+    <a href="#/rank/comic" data-nav="rank">熱播榜</a>
+    <a href="#/category/comic-drama" data-nav="category">分類</a>
+    <a href="#/library" data-nav="library">我的</a>
+  </nav>
+  <form class="search" id="search-form" autocomplete="off">
+    <input id="search-input" type="search" placeholder="搜尋劇名 / 題材" aria-label="搜尋">
+    <ul class="suggest" id="suggest" hidden></ul>
+  </form>
+</header>
+<main id="view" tabindex="-1"></main>
+<div class="toast" id="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
