@@ -79,5 +79,5 @@ fi
   printf '\n---\n\n'
   printf '安装包：`HGTV_%s.apk`\n' "$version"
   printf '校验：`SHA256SUMS`（`sha256sum -c SHA256SUMS`）\n\n'
-  printf '最低 Android 8.0 / API 26，沿用同一发布签名，可覆盖安装并保留本机记录。\n'
+  printf '最低 Android 6.0 / API 23，沿用同一发布签名，可覆盖安装并保留本机记录。\n'
 }

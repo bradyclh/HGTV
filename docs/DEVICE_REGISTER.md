@@ -1,58 +1,58 @@
-# 设备注册（`device_register`）
+# 裝置註冊（`device_register`）
 
-平台的内容接口**按设备放行**。所谓「不导入账号就用不了」，真实原因是这台设备没在服务端注册过；
-注册本身是**匿名**的——不需要账号、密码或短信，一次请求即可。
+平臺的內容介面**按裝置放行**。所謂「不匯入帳號就用不了」，真實原因是這臺裝置沒在服務端註冊過；
+註冊本身是**匿名**的——不需要帳號、密碼或簡訊，一次請求即可。
 
-本文件记录这条接口的协议、踩过的坑，以及本工程 `core/.../DeviceRegister.kt` 的实现依据。
+本檔案記錄這條介面的協議、踩過的坑，以及本工程 `core/.../DeviceRegister.kt` 的實現依據。
 
-## 1. 它解决什么问题
+## 1. 它解決什麼問題
 
-同一套签名、同一个请求，注册前后结果完全不同：
+同一套簽名、同一個請求，註冊前後結果完全不同：
 
-| 接口 | 未注册设备 | 注册后 |
+| 介面 | 未註冊裝置 | 註冊後 |
 | --- | --- | --- |
-| App 搜索 `POST /reading/bookapi/search/tab/v` | `HTTP 200 + 0 字节`（从不返回数据） | `code 0`，一次 6–20 条、带 `has_more` 游标可翻页 |
+| App 搜尋 `POST /reading/bookapi/search/tab/v` | `HTTP 200 + 0 字节`（從不返回資料） | `code 0`，一次 6–20 條、帶 `has_more` 遊標可翻頁 |
 | 播放 `POST /novel/player/video_model/v1/` | `101000 服务异常` | `code 0` + 完整播放模型 |
 
-平台认的是 **`device_id` + `install_id` 这一对**，两者绑定：
+平臺認的是 **`device_id` + `install_id` 這一對**，兩者繫結：
 
-- 用抓包里那对真机标识 → 搜索有数据；
-- 只换其中任一个（哪怕形状完全正确）→ 立刻回空响应；
-- 换任意一对全新标识 → 回空响应，**必须先注册**。
+- 用抓包裡那對真機標識 → 搜尋有資料；
+- 只換其中任一個（哪怕形狀完全正確）→ 立刻回空回應；
+- 換任意一對全新標識 → 回空回應，**必須先註冊**。
 
-因此「随手编一对 16 位数字」不行：它只够让播放通过（见第 5 节），搜索一定拿不到数据。
+因此「隨手編一對 16 位數字」不行：它只夠讓播放透過（見第 5 節），搜尋一定拿不到資料。
 
-## 2. 请求
+## 2. 請求
 
 ```
 POST https://log5-applog-lf.fqnovel.com/service/2/device_register/
      ?tt_data=a&cronet_version=8d40f833_2026-03-03&ttnet_version=4.2.243.31-douyin&use_store_region_cookie=1
 ```
 
-`is.snssdk.com` 与 `log5-applog-lf.fqnovel.com` 等价，抓包里两个都在用。
+`is.snssdk.com` 與 `log5-applog-lf.fqnovel.com` 等價，抓包裡兩個都在用。
 
-### 请求头
+### 請求標頭
 
-| 头 | 值 |
+| 頭 | 值 |
 | --- | --- |
 | `Content-Type` | `application/octet-stream;tt-data=a` |
 | `log-encode-type` | `gzip` |
 | `x-ss-dp` | `8662` |
-| `x-ss-req-ticket` | 毫秒时间戳 |
+| `x-ss-req-ticket` | 毫秒時間戳 |
 | `x-vc-bdturing-sdk-version` | `4.0.3.cn` |
 | `lc` / `sdk-version` / `passport-sdk-version` | `101` / `2` / `5051452` |
 | `x-neptune` | `-8|50:51:59:30:40:47:49:39` |
-| `x-ss-stub` | **body 的 MD5，大写** |
+| `x-ss-stub` | **body 的 MD5，大寫** |
 | `User-Agent` | `com.phoenix.read/73932 (…)` |
 
-**没有签名头**：这条请求不带 `x-gorgon` / `x-khronos` / `x-ladon` / `x-argus` / `x-helios` /
-`x-medusa`，query 里也没有 `ts` / `_rticket`。加上反而会被判异常客户端。
+**沒有簽名頭**：這條請求不帶 `x-gorgon` / `x-khronos` / `x-ladon` / `x-argus` / `x-helios` /
+`x-medusa`，query 裡也沒有 `ts` / `_rticket`。加上反而會被判異常客戶端。
 
-### 请求体
+### 請求體
 
-`ttEncrypt(gzip(JSON))`，原始二进制（不是 base64）。
+`ttEncrypt(gzip(JSON))`，原始二進位（不是 base64）。
 
-`ttEncrypt` 与 `MediaCrypto.decryptUrl` 用的是同一族常量：
+`ttEncrypt` 與 `MediaCrypto.decryptUrl` 用的是同一族常量：
 
 ```
 74 63 05 10 00 00 || rnd[32] || AES-128-CBC(key, iv, PKCS7(SHA512(data) || data))
@@ -61,7 +61,7 @@ KDF_SALT = 4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524
            f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58
 ```
 
-JSON 结构（冷启动首注册的形态，50 个字段；`install_id` / `device_id` **不带**，由服务端下发）：
+JSON 結構（冷啟動首註冊的形態，50 個欄位；`install_id` / `device_id` **不帶**，由服務端下發）：
 
 ```json
 {
@@ -94,7 +94,7 @@ JSON 结构（冷启动首注册的形态，50 个字段；`install_id` / `devic
 }
 ```
 
-## 3. 响应
+## 3. 回應
 
 ```json
 {
@@ -108,101 +108,101 @@ JSON 结构（冷启动首注册的形态，50 个字段；`install_id` / `devic
 }
 ```
 
-同时下发 Cookie（**后续请求要带上**）：
+同時下發 Cookie（**後續請求要帶上**）：
 
 ```
 store-region=cn-gd; store-region-src=did; install_id=4175314086270795; ttreq=1$1c2213245b92…
 ```
 
-- `new_user` = 1 表示平台这次新建了一台设备；`0` 表示这台已存在。
-- `device_id` / `install_id` 有时给数字、有时给字符串，两种都认；优先取 `*_str`。
-- 判成功：两个值都存在且不为 `0`。**回 `device_id=0` 就是被拒**（body 形态或头不对）。
+- `new_user` = 1 表示平臺這次新建了一臺裝置；`0` 表示這臺已存在。
+- `device_id` / `install_id` 有時給數字、有時給字串，兩種都認；優先取 `*_str`。
+- 判成功：兩個值都存在且不為 `0`。**回 `device_id=0` 就是被拒**（body 形態或頭不對）。
 
-## 4. 三个踩过的坑
+## 4. 三個踩過的坑
 
-这三条都是照着抓包 HAR 复现时踩出来的，且都能稳定复现。
+這三條都是照著抓包 HAR 復現時踩出來的，且都能穩定復現。
 
-### 4.1 body 必须是原始二进制，不是 base64
+### 4.1 body 必須是原始二進位，不是 base64
 
-抓包 HAR 里 `postData.text` 是 **base64 文本**，但同一条请求的 `content-length` 等于
-**解码后**的字节数（1030 / 1222）。照着 `postData.text` 把 base64 文本当 body 发出去，
-服务端一律回 `device_id=0`。
+抓包 HAR 裡 `postData.text` 是 **base64 文字**，但同一條請求的 `content-length` 等於
+**解碼後**的位元組數（1030 / 1222）。照著 `postData.text` 把 base64 文字當 body 發出去，
+服務端一律回 `device_id=0`。
 
-用原始二进制重放同一条抓包请求，立刻回真实 `device_id`：
+用原始二進位重放同一條抓包請求，立刻回真實 `device_id`：
 
 ```
 base64 文本当 body  → {"device_id":0,"install_id":0}
 原始二进制当 body    → {"device_id":4175314086266699,…,"device_token":"AAA3NH3A…"}
 ```
 
-### 4.2 `os_version` 必须是字符串
+### 4.2 `os_version` 必須是字串
 
-写成数字就失败，且**只错这一个字段**：
+寫成數字就失敗，且**只錯這一個欄位**：
 
-| `os_version` | 结果 |
+| `os_version` | 結果 |
 | --- | --- |
-| `"12"`（字符串） | 成功 6/6 |
-| `12`（数字） | 失败 6/6 |
-| `"13"`（字符串） | 成功 6/6 |
-| `13`（数字） | 失败 6/6 |
+| `"12"`（字串） | 成功 6/6 |
+| `12`（數字） | 失敗 6/6 |
+| `"13"`（字串） | 成功 6/6 |
+| `13`（數字） | 失敗 6/6 |
 
-`os_api` / `density_dpi` / `sdk_target_version` 这些数字或字符串都收。
+`os_api` / `density_dpi` / `sdk_target_version` 這些數字或字串都收。
 
-### 4.3 响应可能是压缩的
+### 4.3 回應可能是壓縮的
 
-成功响应可能是 **brotli**（`Content-Encoding: br`）或 **gzip**；失败响应（`device_id=0`）反而是
-明文 JSON。用 OkHttp 时**不要手动设 `accept-encoding`**：OkHttp 只在自己加这个头时才透明解压，
-手动写死会让它跳过解压，body 到手上还是压缩字节、JSON 解析必失败。
+成功回應可能是 **brotli**（`Content-Encoding: br`）或 **gzip**；失敗回應（`device_id=0`）反而是
+明文 JSON。用 OkHttp 時**不要手動設 `accept-encoding`**：OkHttp 只在自己加這個頭時才透明解壓，
+手動寫死會讓它跳過解壓，body 到手上還是壓縮位元組、JSON 解析必失敗。
 
-## 5. 播放与搜索都只用注册下发的那一对
+## 5. 播放與搜尋都只用註冊下發的那一對
 
-实测两者对身份的要求不同，但**本工程统一按注册身份来**：
+實測兩者對身份的要求不同，但**本工程統一按註冊身份來**：
 
-| | 服务端的实际门槛 | 依据 |
+| | 服務端的實際門檻 | 依據 |
 | --- | --- | --- |
-| 播放 | 只要 `device_id` **不在平台黑名单**里 | 随机 16 位数字 20/20 可播；仓库内置那个固定值（大量第三方共用）被拉黑，一律 `200 + 0 字节` |
-| 搜索 | 必须是**服务端注册过的 `device_id` + `install_id`** | 随机值 0/6 命中；注册后 6/6 有数据 |
+| 播放 | 只要 `device_id` **不在平臺黑名單**裡 | 隨機 16 位數字 20/20 可播；倉庫內建那個固定值（大量第三方共用）被拉黑，一律 `200 + 0 字节` |
+| 搜尋 | 必須是**服務端註冊過的 `device_id` + `install_id`** | 隨機值 0/6 命中；註冊後 6/6 有資料 |
 
-也就是说：播放对身份的**要求**比搜索松，但本机不再因此自己编一份随机身份——
-`device_id` / `install_id` 只有一个来源，就是注册下发的这一对（`Library.deviceIdentity()`），
-注册之前它是空表：
+也就是說：播放對身份的**要求**比搜尋松，但本機不再因此自己編一份隨機身份——
+`device_id` / `install_id` 只有一個來源，就是註冊下發的這一對（`Library.deviceIdentity()`），
+註冊之前它是空表：
 
-- 启动时异步注册一次（`MainActivity.ensureDeviceRegistered`）；
-- **播放取播放地址之前再同步兜一次**（`registerDeviceOnce`；取地址那条路与下一集预取都走它），
-  保证签名用的身份是注册过的这一对，而不是内置那份被拉黑的档案；
-- 注册失败时播放照旧尝试（会走到「播放失败，可重试」那一步），下次启动或下一次播放再试。
+- 啟動時非同步註冊一次（`MainActivity.ensureDeviceRegistered`）；
+- **播放取播放地址之前再同步兜一次**（`registerDeviceOnce`；取地址那條路與下一集預取都走它），
+  保證簽名用的身份是註冊過的這一對，而不是內建那份被拉黑的檔案；
+- 註冊失敗時播放照舊嘗試（會走到「播放失敗，可重試」那一步），下次啟動或下一次播放再試。
 
-并发调用由一把锁收敛成一次请求（启动那次与播放前那次可能同时进来）。
+併發呼叫由一把鎖收斂成一次請求（啟動那次與播放前那次可能同時進來）。
 
-## 6. 第三方注册不出来吗
+## 6. 第三方註冊不出來嗎
 
-能注册出来。上面第 2 节那套头 + 原始二进制 body，就能稳定拿到全新设备：
+能註冊出來。上面第 2 節那套頭 + 原始二進位 body，就能穩定拿到全新裝置：
 
 ```
 全新 cdid / openudid / clientudid / req_id，连发 10 次 → 10 次都拿到新 device_id、new_user=1
 ```
 
-早期「注册不出来」的记录（一律 `device_id=0`）全部是第 4.1 节那个 base64 body 的错。
+早期「註冊不出來」的記錄（一律 `device_id=0`）全部是第 4.1 節那個 base64 body 的錯。
 
-## 7. 代码位置
+## 7. 程式碼位置
 
-| 位置 | 职责 |
+| 位置 | 職責 |
 | --- | --- |
-| `core/.../DeviceRegister.kt` | `ttEncrypt` / 组 body / 组头 / 解析响应（无 Android 依赖） |
-| `core/.../ContentRepository.kt` | `registerDevice()`：发请求、写回 `deviceIdentity` 与下发的 Cookie；搜索与播放共用这份身份。`inheritDevice()` 让播放预取那个仓库实例共用同一份身份与 Cookie |
-| `app/.../Library.kt` | 落盘注册结果：`registered-device-id` / `registered-install-id`；`deviceIdentity()` 只认这一对，没注册过就是空表 |
-| `app/.../MainActivity.kt` | `registerDeviceOnce()`：启动时异步补注册、播放前同步兜一次；成功后重新拉首页 |
+| `core/.../DeviceRegister.kt` | `ttEncrypt` / 組 body / 組頭 / 解析回應（無 Android 依賴） |
+| `core/.../ContentRepository.kt` | `registerDevice()`：發請求、寫回 `deviceIdentity` 與下發的 Cookie；搜尋與播放共用這份身份。`inheritDevice()` 讓播放預取那個倉庫例項共用同一份身份與 Cookie |
+| `app/.../Library.kt` | 落盤註冊結果：`registered-device-id` / `registered-install-id`；`deviceIdentity()` 只認這一對，沒註冊過就是空表 |
+| `app/.../MainActivity.kt` | `registerDeviceOnce()`：啟動時非同步補註冊、播放前同步兜一次；成功後重新拉首頁 |
 
-### 升级兼容
+### 升級相容
 
-身份只有一组键，判据是 `Library.deviceRegistered()`：
+身份只有一組鍵，判據是 `Library.deviceRegistered()`：
 
-- `registered-device-id` / `registered-install-id`：只有注册成功才写。判据是
+- `registered-device-id` / `registered-install-id`：只有註冊成功才寫。判據是
   `Library.deviceRegistered()`。
 
-早期版本（未发布的那几版试跑）曾把「本机随机 `device-id` / `install-id`」当身份用，
-播放与搜索都拿它签名。这两组键**不再被读取**（`Library` 里已经没有生成随机身份的代码），
-升级上来的机器上遗留的那两个值就是一段死数据，不影响任何请求。
+早期版本（未釋出的那幾版試跑）曾把「本機隨機 `device-id` / `install-id`」當身份用，
+播放與搜尋都拿它簽名。這兩組鍵**不再被讀取**（`Library` 裡已經沒有生成隨機身份的程式碼），
+升級上來的機器上遺留的那兩個值就是一段死資料，不影響任何請求。
 
-老版本升级上来时 `registered-device-id` 是空的，因此 `deviceRegistered()` 为 false：
-启动后会补一次注册，播放前还会再兜一次；注册结果写进这一组键。
+老版本升級上來時 `registered-device-id` 是空的，因此 `deviceRegistered()` 為 false：
+啟動後會補一次註冊，播放前還會再兜一次；註冊結果寫進這一組鍵。
