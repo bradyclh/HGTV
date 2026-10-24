@@ -2,6 +2,7 @@
 // 紅果TV 網頁版前端：hash 路由的單頁應用，資料來自同一台本機伺服器的 /api 與 /video。
 
 const view = document.getElementById('view');
+const RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const $ = (selector, root = document) => root.querySelector(selector);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtTime = (seconds) => {
@@ -269,7 +270,7 @@ async function playPage(token, id, episodeNumber) {
           <button class="btn" id="next" ${index >= total - 1 ? 'disabled' : ''}>下一集 ›</button>
           <span class="spacer"></span>
           <label>畫質 <select id="quality">${[1080, 720, 480].map((q) => `<option value="${q}" ${q === settings.quality ? 'selected' : ''}>${q}P</option>`).join('')}</select></label>
-          <label>倍速 <select id="rate">${[0.75, 1, 1.25, 1.5, 2].map((r) => `<option value="${r}" ${r === settings.rate ? 'selected' : ''}>${r}×</option>`).join('')}</select></label>
+          <label>倍速 <select id="rate">${RATES.map((r) => `<option value="${r}" ${r === settings.rate ? 'selected' : ''}>${r}×</option>`).join('')}</select></label>
           <label>彈幕 <select id="dm">${[['full', '全螢幕'], ['top', '上方'], ['off', '關閉']].map(([v, t]) => `<option value="${v}" ${v === settings.danmaku ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
           <label><input type="checkbox" id="auto" ${settings.autoNext ? 'checked' : ''}> 自動連播</label>
           <button class="btn" id="fs">⛶ 全螢幕</button>
@@ -278,7 +279,14 @@ async function playPage(token, id, episodeNumber) {
       <aside class="side">
         <h2>選集 <span class="hint">共 ${total} 集</span></h2>
         <div id="episodes"></div>
-        <div class="keys"><kbd>空白</kbd> 播放/暫停　<kbd>←</kbd><kbd>→</kbd> 快退/快進 5 秒<br><kbd>↑</kbd><kbd>↓</kbd> 音量　<kbd>F</kbd> 全螢幕　<kbd>D</kbd> 彈幕<br><kbd>N</kbd> 下一集　<kbd>P</kbd> 上一集</div>
+        <div class="keys">
+          <kbd>K</kbd>/<kbd>空白</kbd> 播放/暫停　<kbd>M</kbd> 靜音<br>
+          <kbd>J</kbd><kbd>L</kbd> 倒退/快轉 10 秒　<kbd>←</kbd><kbd>→</kbd> 5 秒<br>
+          <kbd>↑</kbd><kbd>↓</kbd> 音量　<kbd>0</kbd>–<kbd>9</kbd> 跳到 0–90%<br>
+          <kbd>F</kbd> 全螢幕　<kbd>C</kbd> 彈幕　<kbd>I</kbd> 子母畫面<br>
+          <kbd>&lt;</kbd><kbd>&gt;</kbd> 倍速　<kbd>,</kbd><kbd>.</kbd> 逐格（暫停時）<br>
+          <kbd>Shift</kbd>+<kbd>N</kbd>/<kbd>P</kbd> 下一集/上一集
+        </div>
       </aside>
     </div>`;
   episodeGrid($('#episodes'), id, total, index, (i) => `#/play/${id}/${i + 1}`);
@@ -332,20 +340,60 @@ async function playPage(token, id, episodeNumber) {
     else (stage.requestFullscreen || stage.webkitRequestFullscreen).call(stage);
   }
 
+  // 快捷鍵對齊 YouTube：K/空白、J/L、←/→、↑/↓、M、F、C、I、0–9、Home/End、,/.、</>、Shift+N/P。
+  const togglePlay = () => (video.paused ? video.play() : video.pause());
+  const seekBy = (seconds) => { video.currentTime = Math.min(Math.max(0, video.currentTime + seconds), video.duration || Infinity); };
+  const seekTo = (ratio) => { if (video.duration) video.currentTime = video.duration * ratio; };
+  const volumeBy = (delta) => {
+    video.muted = false;
+    video.volume = Math.round(Math.min(1, Math.max(0, video.volume + delta)) * 100) / 100;
+    toast(`音量 ${Math.round(video.volume * 100)}%`);
+  };
+  const rateBy = (step) => {
+    const i = RATES.indexOf(store.settings.rate);
+    const next = RATES[Math.min(RATES.length - 1, Math.max(0, (i < 0 ? RATES.indexOf(1) : i) + step))];
+    $('#rate').value = String(next);
+    $('#rate').dispatchEvent(new Event('change'));
+    toast(`倍速 ${next}×`);
+  };
+  const frameBy = (frames) => { if (!video.paused) video.pause(); seekBy(frames / 30); };
+  const toggleDanmaku = () => {
+    const modes = ['full', 'top', 'off'];
+    $('#dm').value = modes[(modes.indexOf(store.settings.danmaku) + 1) % modes.length];
+    $('#dm').dispatchEvent(new Event('change'));
+    toast(`彈幕：${$('#dm').selectedOptions[0].text}`);
+  };
+  const togglePip = () => {
+    if (document.pictureInPictureElement) document.exitPictureInPicture();
+    else video.requestPictureInPicture?.().catch(() => toast('無法開啟子母畫面'));
+  };
   function onKey(e) {
     if (e.target.closest('input, select, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
     const actions = {
-      ' ': () => (video.paused ? video.play() : video.pause()),
-      ArrowLeft: () => { video.currentTime = Math.max(0, video.currentTime - 5); },
-      ArrowRight: () => { video.currentTime = Math.min(video.duration || Infinity, video.currentTime + 5); },
-      ArrowUp: () => { video.volume = Math.min(1, video.volume + 0.1); },
-      ArrowDown: () => { video.volume = Math.max(0, video.volume - 0.1); },
+      ' ': togglePlay, k: togglePlay, K: togglePlay,
+      j: () => seekBy(-10), J: () => seekBy(-10),
+      l: () => seekBy(10), L: () => seekBy(10),
+      ArrowLeft: () => seekBy(-5),
+      ArrowRight: () => seekBy(5),
+      ArrowUp: () => volumeBy(0.05),
+      ArrowDown: () => volumeBy(-0.05),
+      m: () => { video.muted = !video.muted; toast(video.muted ? '靜音' : '取消靜音'); },
       f: toggleFullscreen,
-      d: () => { const modes = ['full', 'top', 'off']; const next = modes[(modes.indexOf(store.settings.danmaku) + 1) % 3]; $('#dm').value = next; $('#dm').dispatchEvent(new Event('change')); toast(`彈幕：${$('#dm').selectedOptions[0].text}`); },
-      n: () => go(index + 1),
-      p: () => go(index - 1),
+      c: toggleDanmaku,
+      i: togglePip,
+      Home: () => seekTo(0),
+      End: () => seekTo(0.999),
+      ',': () => frameBy(-1),
+      '.': () => frameBy(1),
+      '<': () => rateBy(-1),
+      '>': () => rateBy(1),
+      N: () => go(index + 1),
+      P: () => go(index - 1),
     };
-    const action = actions[e.key.length === 1 ? e.key.toLowerCase() : e.key];
+    for (let n = 0; n <= 9; n++) actions[String(n)] = () => seekTo(n / 10);
+    // 大寫鎖定時單鍵字母也照樣能用；Shift+N / Shift+P 才是換集（與 YouTube 相同）。
+    const key = e.key.length === 1 && /[a-z]/i.test(e.key) && !e.shiftKey ? e.key.toLowerCase() : e.key;
+    const action = actions[key];
     if (!action) return;
     e.preventDefault();
     e.stopPropagation();
