@@ -124,7 +124,51 @@ h2 { font-size: 19px; margin: 0; }
   animation: flash .6s ease-out forwards;
 }
 @keyframes flash { from { opacity: 1; transform: scale(.8); } to { opacity: 0; transform: scale(1.4); } }
+.stage .flash svg { width: 34px; height: 34px; fill: currentColor; }
 .stage video { cursor: pointer; }
+/* 不要瀏覽器的焦點外框（點過畫面後 Chrome 會畫一圈彩色框）。 */
+.stage, .stage video, .stage :focus { outline: none; }
+
+/* 自訂控制列：播放中閒置 2.5 秒淡出，游標一起隱藏。 */
+.bar {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+  padding: 36px 12px 6px; background: linear-gradient(transparent, rgba(0, 0, 0, .72));
+  opacity: 1; transition: opacity .35s ease;
+}
+.stage.idle .bar { opacity: 0; pointer-events: none; }
+.stage.idle, .stage.idle video { cursor: none; }
+.seek { position: relative; height: 16px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+.track { position: relative; width: 100%; height: 3px; background: rgba(255, 255, 255, .22); transition: height .12s; }
+.seek:hover .track, .seek.drag .track { height: 5px; }
+.buffered, .played { position: absolute; left: 0; top: 0; bottom: 0; }
+.buffered { background: rgba(255, 255, 255, .4); }
+.played { background: var(--accent); }
+.thumb {
+  position: absolute; top: 50%; width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px; border-radius: 50%;
+  background: var(--accent); transform: scale(0); transition: transform .12s;
+}
+.seek:hover .thumb, .seek.drag .thumb { transform: scale(1); }
+.tip {
+  position: absolute; bottom: 20px; transform: translateX(-50%); pointer-events: none;
+  background: rgba(0, 0, 0, .8); color: #fff; padding: 2px 7px; border-radius: 4px; font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.bar .row { display: flex; align-items: center; gap: 2px; color: #fff; }
+.ic {
+  display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 38px; padding: 0;
+  background: none; border: 0; border-radius: 6px; color: #fff; opacity: .9;
+}
+.ic:hover { opacity: 1; background: rgba(255, 255, 255, .08); }
+.ic:disabled { opacity: .3; cursor: default; background: none; }
+.ic svg { width: 24px; height: 24px; fill: currentColor; }
+.ic.text { width: auto; min-width: 44px; padding: 0 8px; font-size: 14px; font-weight: 600; }
+.ic.off { opacity: .4; }
+.vol { display: inline-flex; align-items: center; }
+.vol input { width: 0; opacity: 0; margin: 0; accent-color: #fff; transition: width .2s, opacity .2s, margin .2s; }
+.vol:hover input, .vol input:focus-visible { width: 80px; opacity: 1; margin: 0 8px 0 2px; }
+.bar .time { margin-left: 8px; font-size: 13px; color: #eee; font-variant-numeric: tabular-nums; }
+.bar .grow { flex: 1; }
+.bar .ep-label { font-size: 13px; color: #ddd; margin-right: 6px; }
 .danmaku { position: absolute; left: 0; right: 0; top: 0; height: 100%; overflow: hidden; pointer-events: none; }
 .danmaku.top { height: 30%; }
 .danmaku span {
