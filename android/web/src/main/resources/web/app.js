@@ -28,24 +28,63 @@ const fmtTime = (seconds) => {
   return `${m}:${String(s).padStart(2, '0')}`;
 };
 
-// ---------- 本機資料（收藏 / 觀看進度 / 設定），只存在這個瀏覽器 ----------
+// ---------- 使用者資料（收藏 / 觀看進度 / 設定） ----------
+// 沒登入（本機直接連線）時存在 localStorage；透過 Cloudflare Access 登入後改存在伺服器上的個人紀錄，
+// 每次異動送一筆操作給 /api/library（不整份覆蓋，多台裝置同時看也不會互相蓋掉）。
 const store = (() => {
   const KEY = 'hgtv-web';
-  let data;
+  const DEFAULTS = { quality: 1080, rate: 1, danmaku: 'full', autoNext: true, volume: 1 };
+  let data, user = null, settingsTimer = 0;
   try { data = JSON.parse(localStorage.getItem(KEY)) || {}; } catch { data = {}; }
   data.favorites ||= [];
   data.progress ||= {};
-  data.settings = { quality: 1080, rate: 1, danmaku: 'full', autoNext: true, volume: 1, ...(data.settings || {}) };
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(data)); } catch { /* 隱私模式等情況下不保存 */ } };
+  data.settings = { ...DEFAULTS, ...(data.settings || {}) };
+  // 登入時不把個人紀錄寫進這台瀏覽器（可能是共用電腦）。
+  const save = () => { if (user) return; try { localStorage.setItem(KEY, JSON.stringify(data)); } catch { /* 隱私模式等情況下不保存 */ } };
   const brief = (s) => ({ id: s.id, title: s.title, cover: s.cover, badge: s.badge });
+  const send = (method, path, body) => {
+    if (!user) return;
+    fetch(`/api/library${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) })
+      .then((r) => { if (!r.ok) throw new Error(r.status); })
+      .catch(() => toast('紀錄同步失敗，稍後會再試'));
+  };
+  const adopt = (doc) => {
+    data = { favorites: doc.favorites || [], progress: doc.progress || {}, settings: { ...DEFAULTS, ...(doc.settings || {}) } };
+  };
   return {
+    /** 啟動時呼叫一次：看是否經過 Access 登入；第一次登入會把這台瀏覽器原有的本機紀錄併上去。 */
+    async init() {
+      try {
+        const me = await fetch('/api/me').then((r) => r.json());
+        if (!me.email) return;
+        const importedKey = `${KEY}-imported:${me.email}`;
+        let imported = false;
+        try { imported = localStorage.getItem(importedKey) === '1'; } catch { /* 讀不到就當沒匯入過 */ }
+        const hasLocal = data.favorites.length || Object.keys(data.progress).length;
+        const response = !imported && hasLocal
+          ? await fetch('/api/library/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) })
+          : await fetch('/api/library');
+        if (!response.ok) return;
+        adopt(await response.json());
+        user = me;
+        try { localStorage.setItem(importedKey, '1'); } catch { /* 下次再匯入一次也只是合併，不會重複 */ }
+      } catch { /* 拿不到就照本機模式用 */ }
+    },
+    get user() { return user; },
     get settings() { return data.settings; },
-    setting(name, value) { data.settings[name] = value; save(); },
+    setting(name, value) {
+      data.settings[name] = value;
+      save();
+      // 音量拖動會連發，設定合併成一秒送一次。
+      clearTimeout(settingsTimer);
+      settingsTimer = setTimeout(() => send('PUT', '/settings', data.settings), 1000);
+    },
     isFavorite: (id) => data.favorites.some((s) => s.id === id),
     toggleFavorite(series) {
       const had = this.isFavorite(series.id);
       data.favorites = had ? data.favorites.filter((s) => s.id !== series.id) : [brief(series), ...data.favorites];
       save();
+      send(had ? 'DELETE' : 'PUT', `/favorites/${series.id}`, had ? undefined : brief(series));
       return !had;
     },
     favorites: () => data.favorites,
@@ -54,12 +93,14 @@ const store = (() => {
       const old = data.progress[series.id] || { watched: [] };
       const watched = new Set(old.watched);
       if (duration && time / duration > 0.9) watched.add(episode);
-      data.progress[series.id] = { series: brief(series), episode, time, duration, total, watched: [...watched].slice(-2000), at: Date.now() };
+      const entry = { series: brief(series), episode, time, duration, total, watched: [...watched].slice(-2000), at: Date.now() };
+      data.progress[series.id] = entry;
       save();
+      send('PUT', `/progress/${series.id}`, entry);
     },
     history: () => Object.values(data.progress).sort((a, b) => b.at - a.at),
-    removeHistory(id) { delete data.progress[id]; save(); },
-    clearHistory() { data.progress = {}; save(); },
+    removeHistory(id) { delete data.progress[id]; save(); send('DELETE', `/progress/${id}`); },
+    clearHistory() { data.progress = {}; save(); send('DELETE', '/progress'); },
   };
 })();
 
@@ -256,7 +297,7 @@ async function libraryPage() {
       ${history.length ? `<div class="grid">${history.map((h) => card(h.series, { href: `#/play/${h.series.id}/${h.episode + 1}`, sub: `第 ${h.episode + 1} 集 · ${fmtTime(h.time)}`, progress: h.duration ? h.time / h.duration : null })).join('')}</div>` : '<div class="empty">還沒有觀看紀錄</div>'}</section>
     <section class="section"><div class="section-head"><h2>我的收藏</h2></div>
       ${favorites.length ? `<div class="grid">${favorites.map((s) => card(s)).join('')}</div>` : '<div class="empty">還沒有收藏，在劇集頁按「收藏」加入</div>'}</section>
-    <p class="hint">收藏與觀看紀錄只存在這個瀏覽器。</p>`;
+    <p class="hint">${store.user ? `收藏與觀看紀錄已同步到 ${esc(store.user.email)}，換裝置登入同一個帳號也看得到。` : '收藏與觀看紀錄只存在這個瀏覽器。'}</p>`;
   $('#clear')?.addEventListener('click', () => { if (confirm('清除所有觀看紀錄？')) { store.clearHistory(); libraryPage(); } });
 }
 
@@ -775,4 +816,12 @@ function route() {
   Promise.resolve((pages[name] || pages[''])()).catch((error) => { if (token === routeToken) view.innerHTML = errorBox(error); });
 }
 window.addEventListener('hashchange', route);
-route();
+store.init().finally(() => {
+  const user = store.user;
+  if (user) {
+    const el = document.getElementById('user');
+    el.innerHTML = `<span title="${esc(user.email)}">${esc(user.email.split('@')[0])}</span><a href="${esc(user.logout)}">登出</a>`;
+    el.hidden = false;
+  }
+  route();
+});

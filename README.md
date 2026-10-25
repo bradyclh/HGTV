@@ -128,8 +128,10 @@ tools/web.sh                # 建置並啟動，會自動用預設瀏覽器開�
   （第一次啟動時匿名註冊一次，之後沿用）。
 - 影片多為 HEVC（H.265）：Safari、Chrome 在 macOS 上都能硬體解碼。
 - 參數：`--port <埠號>`（預設 8686）、`--host 0.0.0.0`（讓同一區網的其他裝置也能看，預設只聽本機）、
-  `--token <x-tt-token>`（可選，讓搜尋直接走 App 介面）、`--data-dir <目錄>`。
-- 不支援帳號登入與雲端收藏同步。
+  `--token <x-tt-token>`（可選，讓搜尋直接走 App 介面）、`--data-dir <目錄>`、`--no-open`（不自動開瀏覽器）。
+- **從外面看、用 Google 帳號登入**：用 Cloudflare Tunnel + Access，伺服器依登入的 email 保存每個人的收藏、進度與設定，
+  換裝置登入同一個帳號就接著看。設定步驟見 [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md)
+  （啟動時加 `--access-team <團隊名> --access-aud <AUD Tag>`）。
 
 ## 目前的限制
 

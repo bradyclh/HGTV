@@ -43,6 +43,9 @@ button { cursor: pointer; }
 .suggest li { padding: 7px 10px; border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; gap: 8px; }
 .suggest li:hover, .suggest li.active { background: var(--surface-2); }
 .suggest small { color: var(--accent); flex: none; }
+.user { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); white-space: nowrap; }
+.user span { max-width: 140px; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.user a:hover { color: var(--accent); }
 
 main { padding: 24px 32px 64px; max-width: 1600px; margin: 0 auto; outline: none; }
 h1 { font-size: 24px; margin: 0 0 16px; }

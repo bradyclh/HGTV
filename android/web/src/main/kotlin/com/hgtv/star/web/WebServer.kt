@@ -39,32 +39,111 @@ fun main(args: Array<String>) {
     repository.sessionToken=(option("--token") ?: System.getenv("HGTV_TOKEN"))?.takeIf { it.isNotBlank() }
     val device=DeviceStore(File(dataDir,"device.json"))
     println(if(device.apply(repository)) "裝置身分已就緒" else "裝置註冊失敗：搜尋與播放可能不可用，播放時會再試一次")
+    // Cloudflare Access（見 docs/CLOUDFLARE.md）：給了團隊名與 AUD tag，經過 Cloudflare 進來的請求才放行登入者；
+    // 沒給時，任何經過 Cloudflare 的請求一律拒絕，避免 Tunnel 忘了套 Access 時整站裸露在外。
+    val team=(option("--access-team") ?: System.getenv("HGTV_ACCESS_TEAM"))?.takeIf { it.isNotBlank() }
+    val audience=(option("--access-aud") ?: System.getenv("HGTV_ACCESS_AUD"))?.takeIf { it.isNotBlank() }
+    // HGTV_ACCESS_JWKS_FILE 只給測試用：從本機檔案讀公開金鑰，才能用自己簽的 JWT 跑整套登入流程。
+    val jwksFile=System.getenv("HGTV_ACCESS_JWKS_FILE")?.takeIf { it.isNotBlank() }?.let(::File)
+    val auth=when {
+        team==null || audience==null -> null
+        jwksFile!=null -> AccessAuth(team,audience,fetchKeys={ jwksFile.readText() })
+        else -> AccessAuth(team,audience)
+    }
+    val gate=Gate(auth)
     val server=HttpServer.create(InetSocketAddress(host,port),64)
     server.executor=Executors.newFixedThreadPool(32)
-    val api=Api(repository,device)
-    server.createContext("/api/") { exchange -> api.handle(exchange) }
-    server.createContext("/video/") { exchange -> api.video(exchange) }
-    server.createContext("/") { exchange -> serveStatic(exchange) }
+    val api=Api(repository,device,UserLibrary(File(dataDir,"users")))
+    server.createContext("/api/") { exchange -> gate.run(exchange) { user -> api.handle(exchange,user) } }
+    server.createContext("/video/") { exchange -> gate.run(exchange) { api.video(exchange) } }
+    server.createContext("/") { exchange -> gate.run(exchange) { serveStatic(exchange) } }
     server.start()
     val url="http://${if(host=="0.0.0.0") "127.0.0.1" else host}:$port/"
     println("紅果TV 網頁版已啟動：$url（Ctrl+C 結束）")
+    println(if(auth!=null) "Cloudflare Access 已啟用（團隊 $team）：經過 Tunnel 的請求需要登入" else "未設定 Cloudflare Access：只接受本機直接連線，經過 Cloudflare 的請求會被拒絕")
     if(args.contains("--open")) runCatching { ProcessBuilder("open",url).start() }
 }
 
 private class HttpError(val code: Int, message: String): Exception(message)
 
-private class Api(private val repository: ContentRepository, private val device: DeviceStore) {
+/**
+ * 每個請求的身分判斷。
+ *
+ * - 帶 `Cf-Connecting-IP` / `Cf-Ray` 的請求是經過 Cloudflare（Tunnel）進來的：必須帶有效的 Access JWT，
+ *   通過就是該 email 的使用者；沒設定 Access 或驗證失敗一律 403。
+ * - 其他請求只可能來自這台機器（伺服器預設只聽 127.0.0.1）：當成本機使用者，紀錄存在瀏覽器裡。
+ */
+private class Gate(private val auth: AccessAuth?) {
+    fun run(exchange: HttpExchange, handler: (user: String?) -> Unit) {
+        val headers=exchange.requestHeaders
+        if(!headers.containsKey("Cf-Connecting-IP") && !headers.containsKey("Cf-Ray")) return handler(null)
+        val token=headers.getFirst("Cf-Access-Jwt-Assertion") ?: cookie(headers.getFirst("Cookie"),"CF_Authorization")
+        val email=auth?.verify(token)
+        if(email!=null) return handler(email)
+        exchange.use { sendJson(exchange,403,JSONObject().put("error",if(auth==null) "這台伺服器沒有啟用 Cloudflare Access" else "請先登入")) }
+    }
+
+    private fun cookie(header: String?,name: String): String? =
+        header?.split(';')?.map { it.trim() }?.firstOrNull { it.startsWith("$name=") }?.substringAfter('=')
+}
+
+private class Api(private val repository: ContentRepository, private val device: DeviceStore, private val library: UserLibrary) {
     private val videos=VideoSessions(repository)
     private val danmaku=DanmakuJobs(repository)
     private val idPattern=Regex("[0-9]{1,30}")
 
-    fun handle(exchange: HttpExchange) = exchange.use {
+    fun handle(exchange: HttpExchange,user: String?) = exchange.use {
         val query=parseQuery(exchange.requestURI.rawQuery)
         fun param(name: String) = query[name]?.trim().orEmpty()
         fun id(name: String) = param(name).takeIf { it.matches(idPattern) } ?: throw HttpError(400,"參數 $name 無效")
         fun page() = param("page").toIntOrNull()?.coerceIn(1,500) ?: 1
+        val path=exchange.requestURI.path.removePrefix("/api/").trimEnd('/')
         val body: Any=try {
-            when(exchange.requestURI.path.removePrefix("/api/").trimEnd('/')) {
+            when {
+                path=="me" -> JSONObject().put("email",user ?: JSONObject.NULL)
+                    .put("logout",if(user!=null) "/cdn-cgi/access/logout" else JSONObject.NULL)
+                path=="library" || path.startsWith("library/") -> libraryRoute(exchange,user ?: throw HttpError(401,"沒有登入，紀錄存在這個瀏覽器"),path.removePrefix("library").trimStart('/'))
+                else -> contentRoute(path,::param,::id,::page)
+            }
+        } catch(problem: HttpError) {
+            return@use sendJson(exchange,problem.code,JSONObject().put("error",problem.message))
+        } catch(problem: IllegalArgumentException) {
+            return@use sendJson(exchange,400,JSONObject().put("error",problem.message ?: "參數錯誤"))
+        } catch(problem: Exception) {
+            return@use sendJson(exchange,502,JSONObject().put("error",problem.message ?: "內容暫不可用，請稍後再試"))
+        }
+        sendJson(exchange,200,body)
+    }
+
+    /**
+     * 登入者的紀錄：
+     * `GET library`、`POST library/import`、`PUT|DELETE library/progress/{id}`、`DELETE library/progress`、
+     * `PUT|DELETE library/favorites/{id}`、`PUT library/settings`。寫入後回傳整份最新紀錄。
+     */
+    private fun libraryRoute(exchange: HttpExchange,user: String,rest: String): JSONObject {
+        val method=exchange.requestMethod.uppercase()
+        fun body(): JSONObject {
+            val bytes=exchange.requestBody.readNBytes(MAX_BODY+1)
+            if(bytes.size>MAX_BODY) throw HttpError(413,"資料太大")
+            return runCatching { JSONObject(String(bytes,Charsets.UTF_8)) }.getOrElse { throw HttpError(400,"資料格式錯誤") }
+        }
+        val parts=rest.split('/').filter { it.isNotEmpty() }
+        fun target() = parts.getOrNull(1)?.takeIf { it.matches(idPattern) } ?: throw HttpError(400,"劇集 ID 無效")
+        return when {
+            parts.isEmpty() && method=="GET" -> library.get(user)
+            parts==listOf("import") && method=="POST" -> library.import(user,body())
+            parts==listOf("settings") && method=="PUT" -> library.putSettings(user,body())
+            parts==listOf("progress") && method=="DELETE" -> library.clearProgress(user)
+            parts.firstOrNull()=="progress" && parts.size==2 && method=="PUT" -> library.putProgress(user,target(),body())
+            parts.firstOrNull()=="progress" && parts.size==2 && method=="DELETE" -> library.deleteProgress(user,target())
+            parts.firstOrNull()=="favorites" && parts.size==2 && method=="PUT" -> library.putFavorite(user,body().put("id",target()))
+            parts.firstOrNull()=="favorites" && parts.size==2 && method=="DELETE" -> library.deleteFavorite(user,target())
+            else -> throw HttpError(404,"找不到介面")
+        }
+    }
+
+    private fun contentRoute(path: String,param: (String) -> String,id: (String) -> String,page: () -> Int): Any =
+            when(path) {
                 "home" -> JSONArray(repository.homeFeed().map { (board,page) ->
                     page.toJson().put("board",board.storedValue).put("title",board.homeTitle).put("source",board.source) })
                 "boards" -> JSONArray(RankBoard.entries.map { JSONObject().put("key",it.storedValue).put("label",it.label).put("title",it.homeTitle) })
@@ -98,15 +177,6 @@ private class Api(private val repository: ContentRepository, private val device:
                 }
                 else -> throw HttpError(404,"找不到介面")
             }
-        } catch(problem: HttpError) {
-            return@use sendJson(exchange,problem.code,JSONObject().put("error",problem.message))
-        } catch(problem: IllegalArgumentException) {
-            return@use sendJson(exchange,400,JSONObject().put("error",problem.message ?: "參數錯誤"))
-        } catch(problem: Exception) {
-            return@use sendJson(exchange,502,JSONObject().put("error",problem.message ?: "內容暫不可用，請稍後再試"))
-        }
-        sendJson(exchange,200,body)
-    }
 
     /**
      * `GET /video/{vid}?q=1080`：解密後的 MP4，支援 `Range`。
@@ -170,6 +240,8 @@ private class Api(private val repository: ContentRepository, private val device:
     companion object {
         const val CHUNK=512*1024
         const val MAX_RESPONSE=16L*1024*1024
+        /** 紀錄寫入的請求上限（匯入整份本機紀錄時最大）。 */
+        const val MAX_BODY=2*1024*1024
     }
 }
 
