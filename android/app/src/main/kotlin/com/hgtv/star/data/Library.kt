@@ -228,9 +228,13 @@ class Library(context: Context) {
             "os_api" to android.os.Build.VERSION.SDK_INT.toString(),
             "rom_version" to (android.os.Build.DISPLAY.orEmpty().ifBlank { "W528JS release-keys" })
         )
-        val json=org.json.JSONObject(); fresh.forEach { (key,value) -> json.put(key,value) }
-        sessionPrefs.edit().putString("device-profile",json.toString()).apply()
+        saveDeviceProfile(fresh)
         return fresh
+    }
+    /** 落盘注册档案；播放身份轮换（`ContentRepository.onIdentityRotated`）换了新 `cdid` / `openudid` 时也走这里。 */
+    fun saveDeviceProfile(profile: Map<String,String>) {
+        val json=org.json.JSONObject(); profile.forEach { (key,value) -> json.put(key,value) }
+        sessionPrefs.edit().putString("device-profile",json.toString()).apply()
     }
     /**
      * 账号参数（个人信息页导入的整套登录态）。

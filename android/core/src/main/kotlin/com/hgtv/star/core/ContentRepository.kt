@@ -216,7 +216,15 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
      * 播放与搜索都会各自走回退路径，不会因为注册失败而整页报错。
      */
     fun registerDevice(): DeviceRegister.Registered? {
-        val device=LinkedHashMap(registerProfile).apply { putAll(deviceIdentity) }
+        val registered=register(LinkedHashMap(registerProfile).apply { putAll(deviceIdentity) })
+        if(registered!=null) {
+            deviceIdentity=linkedMapOf("device_id" to registered.deviceId,"iid" to registered.installId)
+            registrationCookies=LinkedHashMap(registrationCookies).apply { putAll(registered.cookies) }
+        }
+        return registered
+    }
+    /** 发一次匿名注册请求；失败（网络 / 服务端拒绝）返回 null。 */
+    private fun register(device: Map<String,String>): DeviceRegister.Registered? {
         val body=DeviceRegister.payload(device)
         val headers=DeviceRegister.headers(body,device)
         val registered=runCatching {
@@ -230,10 +238,6 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
                     ?: throw IOException("设备注册被服务端拒绝")
             }
         }.getOrNull()
-        if(registered!=null) {
-            deviceIdentity=linkedMapOf("device_id" to registered.deviceId,"iid" to registered.installId)
-            registrationCookies=LinkedHashMap(registrationCookies).apply { putAll(registered.cookies) }
-        }
         return registered
     }
     /** 注册下发的 Cookie（`install_id` / `ttreq` / `store-region`），随注册请求一起带上。 */
@@ -283,13 +287,86 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
      * 播放接口空响应体的原地重发次数。
      *
      * 平台 2026-10-15 起对匿名设备一律回 `200 + 0 字节`；带上登录态后基本稳定，
-     * 但仍偶发，因此同一条路径上先重发几次再换下一条——否则会把唯一能用的那条也跳过去。
+     * 但仍偶发，因此同一条路径上先重发一次再换下一条。
+     * 以前重发三次：持续性的空响应现在由路径冷却（[PlaybackRoutes]）与换身份处理，
+     * 原地多发只会把一轮拖到近一分钟，浏览器早就放弃了。
      */
-    private val PLAYBACK_RETRIES=3
+    private val PLAYBACK_RETRIES=1
     /** 官方 App 现行的播放模型接口（GET，参数在 query）；2026-11-02 起旧 `POST /novel/player` 全域名回 200 + 0 字节。 */
     private val VIDEO_TAB_PATH="/reading/bookapi/video_tab/multi_video_model/v1/"
     /** video_tab 的候选域名：同一身份三个域名都实测可用，逐个试以绕开单一域名的临时故障。 */
     private val PLAYBACK_HOSTS=listOf("api5-normal-sinfonlineb.fqnovel.com","api5-normal-hl.fqnovel.com","api5-normal-lf.fqnovel.com")
+    /** 旧 POST 接口：只剩兜底，域名与路径照旧。 */
+    private val LEGACY_PLAYBACK_HOST="https://api5-normal-sinfonlineb.fqnovel.com"
+    private val LEGACY_SINGLE_PATH="/novel/player/video_model/v1/"
+    /** 播放模型的全部候选路径（完整 URL，不含 query），顺序即默认尝试顺序。 */
+    private val PLAYBACK_ROUTES=PLAYBACK_HOSTS.map { "https://$it$VIDEO_TAB_PATH" } + listOf(
+        LEGACY_SINGLE_PATH,
+        "/novel/player/multi_video_model/preload/v1/",
+        "/novel/player/multi_video_model/default/v1/",
+        "/novel/player/multi_video_model/detail/v1/",
+        "/novel/player/multi_video_model/v1/"
+    ).map { LEGACY_PLAYBACK_HOST+it }
+    /**
+     * 匿名身份被平台挡掉之后的恢复（移植自 N3urda/hongguoTV 的身份轮换）。
+     *
+     * 平台对播放模型的放行按「身份 × 路径」波动：同一台注册设备可能突然所有路径都回 `200 + 0 字节`，
+     * 换一台新注册的匿名设备往往就恢复了。这里在**一轮里所有试过的路径都是空响应**时，
+     * 用全新的 `cdid` / `openudid`（不带旧 `device_id`）重新注册一台，换上后同一轮再试一次。
+     *
+     * **只有设了本回调的仓库才会换身份**：新身份必须落盘（否则重启又用回被挡的那台），
+     * 所以由界面层在这里写回自己的存储。播放预取另开的临时仓库不设它，也就不会各自去注册。
+     * 回调收到注册结果与新的注册档案（含新 `cdid` / `openudid`），在调用线程上执行。
+     */
+    @Volatile var onIdentityRotated: ((DeviceRegister.Registered, Map<String,String>) -> Unit)?=null
+    /** 空响应重发前的等待；测试替换掉以免真睡。 */
+    internal var pause: (Long) -> Unit = { Thread.sleep(it) }
+    private val playbackIdentityLock=Any()
+    private var playbackRoutes=PlaybackRoutes(PLAYBACK_ROUTES)
+    /** 连续几轮「全部空响应」：冷却期间没换成身份时累计，到 [IDENTITY_ROTATE_ROUNDS] 后下一轮开头先换。 */
+    private var emptyPlaybackRounds=0
+    /** 上一次换身份的时间与结果（null = 自上次播放成功以来没换过）。 */
+    private var rotationAt=0L
+    private var rotationResult: Boolean?=null
+    /** 身份代数：别的请求已经换过身份时，本请求直接用新身份，不重复注册。 */
+    private var identityGeneration=0
+    private val IDENTITY_ROTATE_ROUNDS=2
+    /** 换了身份仍失败后，至少隔这么久才再换；注册本身失败则隔 [ROTATION_RETRY_COOLDOWN]。 */
+    private val ROTATION_COOLDOWN=30_000L
+    private val ROTATION_RETRY_COOLDOWN=5_000L
+
+    /**
+     * 换一台新注册的匿名设备。别的请求已换过（代数变了）时直接返回 true；
+     * 没设落盘回调、有账号登录态、冷却中或注册失败时返回 false，保留原身份。
+     */
+    private fun rotatePlaybackIdentity(expectedGeneration: Int): Boolean {
+        val persist=onIdentityRotated ?: return false
+        // 登录账号时播放请求用的是账号 Cookie 与真机档案，匿名身份换了也没用。
+        if(credentials?.cookie?.isNotBlank()==true) return false
+        synchronized(playbackIdentityLock) {
+            if(identityGeneration!=expectedGeneration) return true
+            val now=clock()
+            val cooldown=if(rotationResult==false) ROTATION_RETRY_COOLDOWN else ROTATION_COOLDOWN
+            if(rotationResult!=null && now-rotationAt in 0 until cooldown) return false
+            rotationAt=now
+            val profile=LinkedHashMap(registerProfile).apply {
+                this["cdid"]=java.util.UUID.randomUUID().toString()
+                this["openudid"]="%016x".format(kotlin.random.Random.nextLong())
+            }
+            val registered=register(profile)
+            rotationResult=registered!=null
+            if(registered==null) return false
+            registerProfile=profile
+            deviceIdentity=linkedMapOf("device_id" to registered.deviceId,"iid" to registered.installId)
+            // 新设备的 Cookie 整份替换：旧设备的 install_id 留着只会让请求自相矛盾。
+            registrationCookies=registered.cookies
+            playbackRoutes=PlaybackRoutes(PLAYBACK_ROUTES)
+            emptyPlaybackRounds=0
+            identityGeneration++
+            runCatching { persist(registered,profile) }
+            return true
+        }
+    }
     private fun text(url: String, signed: Signer.Request? = null): String {
         val request = Request.Builder().url(url).header("User-Agent",VendorConstants.VIDEO_UA).header("Accept-Language","zh-CN,zh;q=0.9")
         signed?.headers?.forEach { (k,v) -> request.header(k,v) }
@@ -1101,22 +1178,40 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
      *（搜索接口容忍这种写法，播放接口不容忍——真 App 用的是 355 字符的 hex token）。
      */
     private fun videoModel(id: String): JSONObject {
-        val legacyHost="https://api5-normal-sinfonlineb.fqnovel.com"
+        fun current()=synchronized(playbackIdentityLock) { Triple(playbackRoutes,identityGeneration,emptyPlaybackRounds) }
+        var (routes,generation,rounds)=current()
+        // 前几轮已判定这个身份被挡（当时在冷却里没换成）：这一轮开头先换。
+        if((rounds>=IDENTITY_ROTATE_ROUNDS || routes.exhausted(clock())) && rotatePlaybackIdentity(generation))
+            current().let { routes=it.first; generation=it.second }
+        var round=playbackRound(id,routes)
+        if(round.model==null && round.allEmpty) {
+            synchronized(playbackIdentityLock) { if(identityGeneration==generation) emptyPlaybackRounds++ }
+            if(rotatePlaybackIdentity(generation)) round=playbackRound(id,current().first)
+        }
+        round.model?.let { model ->
+            synchronized(playbackIdentityLock) { emptyPlaybackRounds=0; rotationResult=null }
+            return model
+        }
+        if(!round.allEmpty) synchronized(playbackIdentityLock) { emptyPlaybackRounds=0 }
+        throw round.failure ?: IOException("播放接口暂不可用")
+    }
+    private class PlaybackRound(val model: JSONObject?, val failure: IOException?, val allEmpty: Boolean)
+    /** 按 [routes] 的排程把路径试一遍，第一个给得出 `video_model` 的就用；每条的结果记回健康度。 */
+    private fun playbackRound(id: String, routes: PlaybackRoutes): PlaybackRound {
         val biz="""{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024}"""
-        // 新路由要 `video_id` 单值；带场景段与旧路径要 `mixed_video_id_map`（1004 = 短剧）。
-        val videoMap="""{"biz_param":$biz,"mixed_video_id_map":{"1004":["$id"]}}"""
         // 2026-11-02 起官方 App 改用 GET video_tab（见 [VIDEO_TAB_PATH]），参数全走 query，缺一个就回 `100103`。
         val tabQuery=mapOf("video_id" to id,"video_id_type" to "0","device_level" to "1","need_all_video_definition" to "1",
             "need_mp4_align" to "0","use_os_player" to "0","video_platform" to "1024","source" to "0","from_video_id" to "")
-        val candidates=PLAYBACK_HOSTS.map { host -> Triple("https://$host$VIDEO_TAB_PATH",tabQuery,null as String?) } + listOf(
-            Triple("$legacyHost/novel/player/video_model/v1/",emptyMap(),"""{"video_id":"$id","biz_param":$biz}"""),
-            Triple("$legacyHost/novel/player/multi_video_model/preload/v1/",emptyMap(),videoMap),
-            Triple("$legacyHost/novel/player/multi_video_model/default/v1/",emptyMap(),videoMap),
-            Triple("$legacyHost/novel/player/multi_video_model/detail/v1/",emptyMap(),videoMap),
-            Triple("$legacyHost/novel/player/multi_video_model/v1/",emptyMap(),videoMap)
-        )
         var failure: IOException?=null
-        candidates.forEach { (base,query,body) ->
+        var allEmpty=true
+        for(base in routes.plan(clock())) {
+            // 新路由要 `video_id` 单值；带场景段与旧路径要 `mixed_video_id_map`（1004 = 短剧）。
+            val (query,body)=when {
+                base.endsWith(VIDEO_TAB_PATH) -> tabQuery to null
+                base.endsWith(LEGACY_SINGLE_PATH) -> emptyMap<String,String>() to """{"video_id":"$id","biz_param":$biz}"""
+                else -> emptyMap<String,String>() to """{"biz_param":$biz,"mixed_video_id_map":{"1004":["$id"]}}"""
+            }
+            var empty=false
             val attempt=runCatching {
                 val payload=body?.toByteArray()
                 // 播放接口对**匿名设备**也放行（官方 App 冷启动未登录即可播放，见 HAR），
@@ -1133,22 +1228,23 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
                     val request=if(cookie==null) signed else signed.copy(headers=signed.headers+linkedMapOf("Cookie" to cookie))
                     response=text(signed.url,request)
                     // 网关挡掉请求时是 200 + 0 字节：业务码取不到会默认成 0，必须先判空。
-                    // 空响应先原地重发几次再换下一条：否则会把唯一能用的那条路径也跳过去。
                     if(response.isNotBlank() || blankRetry>=PLAYBACK_RETRIES) break
                     blankRetry++
-                    Thread.sleep(200L+blankRetry*200L)
+                    pause(200L+blankRetry*200L)
                 }
-                if(response.isBlank()) throw IOException("播放接口暂不可用（空响应）")
+                if(response.isBlank()) { empty=true; throw IOException("播放接口暂不可用（空响应）") }
                 val data=JSONObject(response)
                 val code=data.optInt("Code",data.optInt("code",0))
                 // 业务码非 0 就是这一条路不通（110001 是旧路径的「未知异常」，100001 是参数错误）。
                 if(code!=0) throw IOException("播放接口暂不可用（${code}）")
                 videoModelOf(data,id) ?: throw IOException("播放接口暂不可用（没有播放模型）")
             }
-            attempt.getOrNull()?.let { return it }
+            attempt.getOrNull()?.let { routes.success(base,clock()); return PlaybackRound(it,null,false) }
+            routes.failed(base,clock(),empty)
+            allEmpty=allEmpty && empty
             failure=attempt.exceptionOrNull() as? IOException ?: IOException(attempt.exceptionOrNull()?.message ?: "播放接口暂不可用")
         }
-        throw failure ?: IOException("播放接口暂不可用")
+        return PlaybackRound(null,failure,allEmpty)
     }
     /**
      * 从播放接口响应里取出 `video_model`：新路由在 `data.video_model`，

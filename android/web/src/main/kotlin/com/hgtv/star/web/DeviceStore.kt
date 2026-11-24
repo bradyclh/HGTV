@@ -42,11 +42,18 @@ class DeviceStore(private val file: File) {
     @Synchronized fun apply(repository: ContentRepository): Boolean {
         repository.registerProfile=profile()
         repository.deviceIdentity=identity()
+        // 播放身分被平台擋掉時倉庫會換一台新註冊的裝置（見 ContentRepository.onIdentityRotated），
+        // 新身分與新檔案都要落盤，否則重開伺服器又用回被擋的那台。
+        repository.onIdentityRotated={ registered,profile -> rotated(registered.deviceId,registered.installId,profile) }
         if(identity().isNotEmpty()) return true
         val registered=runCatching { repository.registerDevice() }.getOrNull() ?: return false
         json.put("device_id",registered.deviceId).put("iid",registered.installId); save()
         repository.deviceIdentity=identity()
         return true
+    }
+
+    @Synchronized fun rotated(deviceId: String, installId: String, profile: Map<String,String>) {
+        json.put("device_id",deviceId).put("iid",installId).put("profile",JSONObject(profile as Map<*,*>)); save()
     }
 
     private fun save() {

@@ -177,6 +177,12 @@ internal fun MainActivity.applyAccount() {
     // 随后异步补一次注册（匿名）：拿到之后搜索与播放都走这同一份身份。
     repository.registerProfile=library.deviceProfile()
     repository.deviceIdentity=library.deviceIdentity()
+    // 播放身份被平台挡掉时，仓库会换一台新注册的匿名设备：新身份与新档案都要落盘，
+    // 否则下次启动又用回被挡的那台。预取用的临时仓库不挂这个回调，所以只有这里会换。
+    repository.onIdentityRotated={ registered,profile ->
+        library.saveDeviceIdentity(registered.deviceId,registered.installId)
+        library.saveDeviceProfile(profile)
+    }
     repository.credentials=library.account().takeIf { it.configured }
     ensureDeviceRegistered()
     accountData=null; accountError=null
