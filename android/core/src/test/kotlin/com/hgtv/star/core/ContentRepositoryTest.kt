@@ -12,6 +12,7 @@ import org.junit.Test
 import java.io.IOException
 
 class ContentRepositoryTest {
+    private val VIDEO_TAB="/reading/bookapi/video_tab/multi_video_model/v1/"
     /**
      * 新路由 `/novel/player/video_model/v1/` 的响应：`video_model` 直接挂在 `data` 下
      * （带场景段与旧路径挂在 `data[<vid>]` 下，见 [legacyVideoModel]）。
@@ -28,6 +29,73 @@ class ContentRepositoryTest {
                 list.put("video_$i",JSONObject().put("vheight",1080).put("codec_type",codec).put("main_url",url)) } })))
         .toString()
 
+    /** video_tab 的响应：`data.video_model_data[<vid>].video_model`，模型直接带数组形态的 `video_list`。 */
+    private fun tabModel(vid: String, vararg rows: JSONObject) = JSONObject().put("code",0).put("message","SUCCESS")
+        .put("data",JSONObject().put("video_model_data",JSONObject().put(vid,JSONObject()
+            .put("video_model",JSONObject().put("status",10).put("version",3).put("video_list",JSONArray(rows.toList())).toString()))))
+        .toString()
+    private fun tabRow(definition: String, codec: String, url: String) = JSONObject().put("main_url",url)
+        .put("backup_url","$url?backup").put("video_meta",JSONObject().put("definition",definition).put("codec_type",codec))
+
+    /**
+     * 2026-11-02 起旧 `POST /novel/player` 全域名 `200 + 0 字节`，官方 App 改用 GET video_tab。
+     * 钉住：video_tab 排第一、走 GET 且参数在 query、直接用模型里的 `video_list`（不再取 fallback_api）、
+     * 跳过 bytevc2、按上限选档。
+     */
+    @Test fun playbackUsesTheVideoTabModelDirectly() {
+        val requests=mutableListOf<Request>()
+        val repo=repository { request ->
+            requests+=request
+            if(request.url.encodedPath==VIDEO_TAB) tabModel("123",
+                tabRow("1080p","bytevc2","https://cdn.example.com/vc2"),
+                tabRow("1080p","bytevc1","https://cdn.example.com/1080"),
+                tabRow("720p","bytevc1","https://cdn.example.com/720"),
+                tabRow("360p","bytevc1","https://cdn.example.com/360"))
+            else ""
+        }
+        val stream=repo.stream("123",1080)
+        assertEquals("https://cdn.example.com/1080",stream.url)
+        assertEquals("1080P",stream.quality)
+        assertEquals("720P",repo.stream("123",720).quality)
+        val sent=requests.first()
+        assertEquals(VIDEO_TAB,sent.url.encodedPath)
+        assertEquals("GET",sent.method)
+        assertEquals("123",sent.url.queryParameter("video_id"))
+        assertEquals("1",sent.url.queryParameter("need_all_video_definition"))
+        assertTrue(requests.all { it.url.encodedPath==VIDEO_TAB })
+    }
+
+    /** 第一个域名回空时换下一个域名，仍走 video_tab。 */
+    @Test fun videoTabMovesToTheNextHostOnBlankResponses() {
+        val hosts=mutableListOf<String>()
+        val repo=repository { request ->
+            hosts+=request.url.host
+            if(request.url.host=="api5-normal-hl.fqnovel.com") tabModel("123",tabRow("720p","bytevc1","https://cdn.example.com/720")) else ""
+        }
+        assertEquals("https://cdn.example.com/720",repo.stream("123").url)
+        assertEquals(listOf("api5-normal-sinfonlineb.fqnovel.com","api5-normal-hl.fqnovel.com"),hosts.distinct())
+    }
+
+    /** 批量形态只给了别的集时不能拿来播（会放错集），要继续换路。 */
+    @Test fun videoTabIgnoresModelsForOtherEpisodes() {
+        val repo=repository { request ->
+            if(request.url.encodedPath==VIDEO_TAB) tabModel("999",tabRow("720p","bytevc1","https://cdn.example.com/wrong")) else ""
+        }
+        assertThrows(IOException::class.java) { repo.stream("123") }
+    }
+
+    /** video_tab 的模型若只带 `fallback_api`（没有 `video_list`），仍按旧方式取清单。 */
+    @Test fun videoTabModelWithOnlyFallbackApiStillPlays() {
+        val repo=repository { request ->
+            when {
+                request.url.host=="example.com" -> fallbackList("h264" to "https://example.com/stream")
+                request.url.encodedPath==VIDEO_TAB -> """{"code":0,"data":{"video_model_data":{"123":{"video_model":"{\"fallback_api\":\"https://example.com/list\"}"}}}}"""
+                else -> ""
+            }
+        }
+        assertEquals("https://example.com/stream",repo.stream("123").url)
+    }
+
     /**
      * 平台 2026-10-14 又把播放接口换了一条：原先带场景段的
      * `/novel/player/multi_video_model/:dr_scene/v1/` 现在一律返回 **HTTP 200 + 空响应体**，
@@ -38,7 +106,7 @@ class ContentRepositoryTest {
     @Test fun playbackPrefersTheVideoIdRouteAndIgnoresBusinessErrors() {
         val paths=mutableListOf<String>()
         val repo=repository { request ->
-            if(request.url.host!="example.com") paths+=request.url.encodedPath
+            if(request.url.host!="example.com" && request.url.encodedPath!=VIDEO_TAB) paths+=request.url.encodedPath
             when {
                 request.url.host=="example.com" -> fallbackList("h264" to "https://example.com/stream")
                 request.url.encodedPath=="/novel/player/video_model/v1/" -> videoModel("https://example.com/stream")
@@ -57,7 +125,7 @@ class ContentRepositoryTest {
     @Test fun videoIdRouteSendsTheSingleVideoIdBodyInsteadOfTheLegacyMap() {
         val requests=mutableListOf<Request>()
         val repo=repository { request ->
-            if(request.url.host!="example.com") requests+=request
+            if(request.url.host!="example.com" && request.url.encodedPath!=VIDEO_TAB) requests+=request
             when {
                 request.url.host=="example.com" -> fallbackList("h264" to "https://example.com/stream")
                 request.url.encodedPath=="/novel/player/video_model/v1/" -> videoModel("https://example.com/stream")
@@ -79,7 +147,7 @@ class ContentRepositoryTest {
     @Test fun blankResponseBodyCountsAsFailureAndMovesToTheNextRoute() {
         val paths=mutableListOf<String>()
         val repo=repository { request ->
-            if(request.url.host!="example.com") paths+=request.url.encodedPath
+            if(request.url.host!="example.com" && request.url.encodedPath!=VIDEO_TAB) paths+=request.url.encodedPath
             when {
                 request.url.host=="example.com" -> fallbackList("h264" to "https://example.com/stream")
                 request.url.encodedPath=="/novel/player/video_model/v1/" -> ""
@@ -102,7 +170,7 @@ class ContentRepositoryTest {
     @Test fun responseWithoutVideoModelMovesToTheNextRoute() {
         val paths=mutableListOf<String>()
         val repo=repository { request ->
-            if(request.url.host!="example.com") paths+=request.url.encodedPath
+            if(request.url.host!="example.com" && request.url.encodedPath!=VIDEO_TAB) paths+=request.url.encodedPath
             when {
                 request.url.host=="example.com" -> fallbackList("h264" to "https://example.com/stream")
                 request.url.encodedPath=="/novel/player/video_model/v1/" -> """{"code":0,"data":{"disable_vsr":true}}"""
@@ -124,7 +192,7 @@ class ContentRepositoryTest {
     @Test fun playbackFallsBackToTheLegacyRouteWhenTheNewRouteFails() {
         val paths=mutableListOf<String>()
         val repo=repository { request ->
-            if(request.url.host!="example.com") paths+=request.url.encodedPath
+            if(request.url.host!="example.com" && request.url.encodedPath!=VIDEO_TAB) paths+=request.url.encodedPath
             when {
                 request.url.host=="example.com" -> fallbackList("h264" to "https://example.com/legacy")
                 request.url.encodedPath=="/novel/player/multi_video_model/v1/" -> legacyVideoModel("https://example.com/legacy")

@@ -286,6 +286,10 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
      * 但仍偶发，因此同一条路径上先重发几次再换下一条——否则会把唯一能用的那条也跳过去。
      */
     private val PLAYBACK_RETRIES=3
+    /** 官方 App 现行的播放模型接口（GET，参数在 query）；2026-11-02 起旧 `POST /novel/player` 全域名回 200 + 0 字节。 */
+    private val VIDEO_TAB_PATH="/reading/bookapi/video_tab/multi_video_model/v1/"
+    /** video_tab 的候选域名：同一身份三个域名都实测可用，逐个试以绕开单一域名的临时故障。 */
+    private val PLAYBACK_HOSTS=listOf("api5-normal-sinfonlineb.fqnovel.com","api5-normal-hl.fqnovel.com","api5-normal-lf.fqnovel.com")
     private fun text(url: String, signed: Signer.Request? = null): String {
         val request = Request.Builder().url(url).header("User-Agent",VendorConstants.VIDEO_UA).header("Accept-Language","zh-CN,zh;q=0.9")
         signed?.headers?.forEach { (k,v) -> request.header(k,v) }
@@ -1097,21 +1101,24 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
      *（搜索接口容忍这种写法，播放接口不容忍——真 App 用的是 355 字符的 hex token）。
      */
     private fun videoModel(id: String): JSONObject {
-        val host="https://api5-normal-sinfonlineb.fqnovel.com"
+        val legacyHost="https://api5-normal-sinfonlineb.fqnovel.com"
         val biz="""{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024}"""
         // 新路由要 `video_id` 单值；带场景段与旧路径要 `mixed_video_id_map`（1004 = 短剧）。
         val videoMap="""{"biz_param":$biz,"mixed_video_id_map":{"1004":["$id"]}}"""
-        val candidates=listOf(
-            "/novel/player/video_model/v1/" to """{"video_id":"$id","biz_param":$biz}""",
-            "/novel/player/multi_video_model/preload/v1/" to videoMap,
-            "/novel/player/multi_video_model/default/v1/" to videoMap,
-            "/novel/player/multi_video_model/detail/v1/" to videoMap,
-            "/novel/player/multi_video_model/v1/" to videoMap
+        // 2026-11-02 起官方 App 改用 GET video_tab（见 [VIDEO_TAB_PATH]），参数全走 query，缺一个就回 `100103`。
+        val tabQuery=mapOf("video_id" to id,"video_id_type" to "0","device_level" to "1","need_all_video_definition" to "1",
+            "need_mp4_align" to "0","use_os_player" to "0","video_platform" to "1024","source" to "0","from_video_id" to "")
+        val candidates=PLAYBACK_HOSTS.map { host -> Triple("https://$host$VIDEO_TAB_PATH",tabQuery,null as String?) } + listOf(
+            Triple("$legacyHost/novel/player/video_model/v1/",emptyMap(),"""{"video_id":"$id","biz_param":$biz}"""),
+            Triple("$legacyHost/novel/player/multi_video_model/preload/v1/",emptyMap(),videoMap),
+            Triple("$legacyHost/novel/player/multi_video_model/default/v1/",emptyMap(),videoMap),
+            Triple("$legacyHost/novel/player/multi_video_model/detail/v1/",emptyMap(),videoMap),
+            Triple("$legacyHost/novel/player/multi_video_model/v1/",emptyMap(),videoMap)
         )
         var failure: IOException?=null
-        candidates.forEach { (path,body) ->
+        candidates.forEach { (base,query,body) ->
             val attempt=runCatching {
-                val payload=body.toByteArray()
+                val payload=body?.toByteArray()
                 // 播放接口对**匿名设备**也放行（官方 App 冷启动未登录即可播放，见 HAR），
                 // 前提是这台设备已在服务端注册过（见 [registerDevice]）：未注册回 `101000 服务异常`
                 // 或 `200 + 0 字节`，注册后回 `code 0` + 完整播放模型。
@@ -1122,7 +1129,7 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
                 var response=""
                 var blankRetry=0
                 while(true) {
-                    val signed=signer.sign(host+path,deviceProfile(),payload)
+                    val signed=signer.sign(base,deviceProfile()+query,payload)
                     val request=if(cookie==null) signed else signed.copy(headers=signed.headers+linkedMapOf("Cookie" to cookie))
                     response=text(signed.url,request)
                     // 网关挡掉请求时是 200 + 0 字节：业务码取不到会默认成 0，必须先判空。
@@ -1136,7 +1143,7 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
                 val code=data.optInt("Code",data.optInt("code",0))
                 // 业务码非 0 就是这一条路不通（110001 是旧路径的「未知异常」，100001 是参数错误）。
                 if(code!=0) throw IOException("播放接口暂不可用（${code}）")
-                videoModelOf(data) ?: throw IOException("播放接口暂不可用（没有播放模型）")
+                videoModelOf(data,id) ?: throw IOException("播放接口暂不可用（没有播放模型）")
             }
             attempt.getOrNull()?.let { return it }
             failure=attempt.exceptionOrNull() as? IOException ?: IOException(attempt.exceptionOrNull()?.message ?: "播放接口暂不可用")
@@ -1145,13 +1152,18 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     }
     /**
      * 从播放接口响应里取出 `video_model`：新路由在 `data.video_model`，
+     * video_tab 在 `data.video_model_data[<vid>].video_model`，
      * 带场景段 / 旧路径在 `data[<vid>].video_model`。
      * `video_model` 可能是对象，也可能是**字符串化的 JSON**，两种都要处理。
      */
-    private fun videoModelOf(data: JSONObject): JSONObject? {
+    private fun videoModelOf(data: JSONObject, id: String): JSONObject? {
         val root=data.optJSONObject("data") ?: return null
         model(root.opt("video_model"))?.let { return it }
-        val entry=root.keys().asSequence().mapNotNull { root.optJSONObject(it) }.firstOrNull() ?: return null
+        root.optJSONObject("video_model_data")?.let { rows ->
+            // 批量形态只认这一集，避免把别的集当成本集播放。
+            return model(rows.optJSONObject(id)?.opt("video_model"))
+        }
+        val entry=root.optJSONObject(id) ?: root.keys().asSequence().mapNotNull { root.optJSONObject(it) }.firstOrNull() ?: return null
         return model(entry.opt("video_model"))
     }
     private fun model(value: Any?): JSONObject? = when(value) {
@@ -1162,23 +1174,56 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     fun stream(id: String, maxQuality: Int = 1080): StreamInfo {
         require(id.matches(Regex("[0-9]{1,30}")))
         val model=videoModel(id)
+        // video_tab 的模型直接带 `video_list`（数组）；旧接口只给 `fallback_api`，要再取一次清单。
+        val direct=renditions(model)
+        if(direct.isNotEmpty()) return pick(direct,maxQuality)
         val raw=model.opt("fallback_api")
         val fallback=when(raw) { is JSONObject -> raw.str("fallback_api"); is JSONArray -> raw.optString(0); else -> runCatching { JSONObject(raw.toString()).str("fallback_api") }.getOrDefault(raw.toString()) }
         if(!fallback.startsWith("https://")) throw IOException("播放地址格式异常")
         val info=JSONObject(text(fallback)).optJSONObject("video_info")?.optJSONObject("data") ?: throw IOException("没有播放资源")
-        val videoList=info.optJSONObject("video_list") ?: throw IOException("没有可用清晰度")
-        // ByteVC2 resources can expose playable audio but no video track in Android's MP4 extractor.
-        // Keep missing legacy codec labels usable, but never select a known incompatible variant.
-        val rows=videoList.keys().asSequence().mapNotNull { k -> videoList.optJSONObject(k)?.let { k to it } }.filter {
-            it.second.str("main_url").isNotEmpty() && it.second.str("codec_type").lowercase() !in setOf("bytevc2","bvc2")
-        }.map { (k,o) -> Triple(qualityNumber(o.str("quality_desc").ifEmpty { o.str("height").ifEmpty { o.str("vheight").ifEmpty { o.str("quality").ifEmpty { k } } } }),k,o) }.sortedByDescending { it.first }.toList()
-        val selected=rows.firstOrNull { it.first<=maxQuality } ?: rows.lastOrNull() ?: throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
-        val item=selected.third; var url=cleanUrl(item.str("main_url")); val seed=info.str("key_seed")
-        if(seed.isNotEmpty()) url=MediaCrypto.decryptUrl(url,decode64(seed))
-        if(!url.startsWith("https://") && !url.startsWith("http://")) throw IOException("播放地址无效")
-        val key=item.str("spade_a").takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
-        val quality=if(selected.first>0) "${selected.first}P"+(if(selected.first>maxQuality) "（兼容资源）" else "") else "自动"
-        return StreamInfo(url,key,quality)
+        if(info.optJSONObject("video_list")==null && info.optJSONArray("video_list")==null) throw IOException("没有可用清晰度")
+        return pick(renditions(info),maxQuality)
+    }
+    private class Rendition(val quality: Int, val url: String, val key: ByteArray?)
+    /**
+     * 解析一份清晰度清单：`video_list` 可能是对象（旧 `fallback_api` 形态，字段平铺）
+     * 或数组（video_tab 形态，编码与尺寸在 `video_meta`、密钥在 `encrypt_info.spade_a`）。
+     * 单个档位解析失败只丢掉那一档，不影响其他档位。
+     */
+    private fun renditions(info: JSONObject): List<Rendition> {
+        val entries=when(val list=info.opt("video_list")) {
+            is JSONObject -> list.keys().asSequence().mapNotNull { k -> list.optJSONObject(k)?.let { k to it } }.toList()
+            is JSONArray -> (0 until list.length()).mapNotNull { i -> list.optJSONObject(i)?.let { "" to it } }
+            else -> emptyList()
+        }
+        val seed=info.str("key_seed").takeIf { it.isNotEmpty() }
+        return entries.mapNotNull { (name,o) ->
+            runCatching {
+                val meta=o.optJSONObject("video_meta")
+                // ByteVC2 resources can expose playable audio but no video track in Android's MP4 extractor.
+                // Keep missing legacy codec labels usable, but never select a known incompatible variant.
+                val codec=o.str("codec_type").ifEmpty { meta?.str("codec_type").orEmpty() }.lowercase()
+                if(codec in setOf("bytevc2","bvc2")) return@runCatching null
+                var url=cleanUrl(o.str("main_url"))
+                if(url.isEmpty()) return@runCatching null
+                if(seed!=null) url=MediaCrypto.decryptUrl(url,decode64(seed))
+                if(!url.startsWith("https://") && !url.startsWith("http://")) return@runCatching null
+                val encryption=o.optJSONObject("encrypt_info")
+                val spade=encryption?.str("spade_a").orEmpty().ifEmpty { o.str("spade_a") }
+                val key=spade.takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
+                // 标明加密却没给密钥的档位放不出来，直接跳过。
+                if(key==null && encryption!=null && encryption.opt("encrypt") !in listOf(false,0,"0","false")) return@runCatching null
+                val quality=qualityNumber(o.str("quality_desc").ifEmpty { meta?.str("definition").orEmpty() }.ifEmpty { o.str("height") }
+                    .ifEmpty { o.str("vheight") }.ifEmpty { meta?.str("vheight").orEmpty() }.ifEmpty { o.str("quality") }.ifEmpty { name })
+                Rendition(quality,url,key)
+            }.getOrNull()
+        }
+    }
+    private fun pick(rows: List<Rendition>, maxQuality: Int): StreamInfo {
+        val sorted=rows.sortedByDescending { it.quality }
+        val selected=sorted.firstOrNull { it.quality<=maxQuality } ?: sorted.lastOrNull() ?: throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
+        val quality=if(selected.quality>0) "${selected.quality}P"+(if(selected.quality>maxQuality) "（兼容资源）" else "") else "自动"
+        return StreamInfo(selected.url,selected.key,quality)
     }
     /**
      * 取一集的弹幕，也就是「原 App」播放时看到的同一份数据。
