@@ -479,6 +479,8 @@ async function playPage(token, id, episodeNumber) {
     document.body.classList.toggle('fs', full);
     fullscreenButton.innerHTML = full ? ICON.exitFullscreen : ICON.fullscreen;
     fullscreenButton.title = full ? '結束全螢幕 (F)' : '全螢幕 (F)';
+    // 進全螢幕時鎖過方向（見 lockOrientation）；結束後放開，手機才會跟著拿法轉回來。
+    if (!full && screen.orientation && screen.orientation.unlock) { try { screen.orientation.unlock(); } catch {} }
   };
   ['timeupdate', 'progress', 'durationchange', 'seeked'].forEach((type) => video.addEventListener(type, paintProgress));
   video.addEventListener('play', () => { paintPlay(); wake(); });
@@ -579,9 +581,31 @@ async function playPage(token, id, episodeNumber) {
   $('#auto').addEventListener('change', (e) => store.setting('autoNext', e.target.checked));
   // 全螢幕的是整個頁面（不是 stage）：換集時播放頁整個重畫，全螢幕也不會因此跳出；
   // 畫面鋪滿由 body.fs 的樣式負責。
+  //
+  // 手機上要分兩種情況：
+  // - iPhone Safari 沒有元素全螢幕（requestFullscreen / webkitRequestFullscreen 都不存在），
+  //   只能讓 <video> 自己進系統播放器的全螢幕（webkitEnterFullscreen）；這時彈幕與自訂控制列不顯示。
+  // - Android 能整頁全螢幕，但不會自己轉向：進全螢幕後依影片比例鎖定方向（橫片轉橫、豎劇維持直向）。
+  // 整頁全螢幕被拒（例如嵌在 iframe 裡）時同樣退回 <video> 的原生全螢幕。
   function toggleFullscreen() {
-    if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
-    else { const root = document.documentElement; (root.requestFullscreen || root.webkitRequestFullscreen).call(root); }
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      return;
+    }
+    const root = document.documentElement;
+    const request = root.requestFullscreen || root.webkitRequestFullscreen;
+    if (!request) { nativeFullscreen(); return; }
+    let entered;
+    try { entered = request.call(root); } catch { nativeFullscreen(); return; }
+    Promise.resolve(entered).then(lockOrientation, nativeFullscreen);
+  }
+  function nativeFullscreen() {
+    if (video.webkitEnterFullscreen) { try { video.webkitEnterFullscreen(); } catch {} }
+  }
+  function lockOrientation() {
+    const lock = screen.orientation && screen.orientation.lock;
+    if (!lock || !video.videoWidth || !video.videoHeight) return;
+    lock.call(screen.orientation, video.videoWidth > video.videoHeight ? 'landscape' : 'portrait').catch(() => {});
   }
 
   // 快捷鍵對齊 YouTube：K/空白、J/L、←/→、↑/↓、M、F、C、I、0–9、Home/End、,/.、</>、Shift+N/P。
