@@ -310,8 +310,9 @@ async function playPage(token, id, episodeNumber) {
   try { detail = await api(`detail?id=${id}`); } catch (error) { if (token === routeToken) view.innerHTML = errorBox(error); return; }
   if (token !== routeToken) return;
   const s = detail.series, total = detail.episodes.length;
-  const index = Math.min(Math.max(1, episodeNumber), total) - 1;
-  const vid = detail.episodes[index];
+  // 換集通常是整頁重畫；只有 iPhone 系統全螢幕中換集時會原地改這兩個值（見 switchInPlace）。
+  let index = Math.min(Math.max(1, episodeNumber), total) - 1;
+  let vid = detail.episodes[index];
   const settings = store.settings;
   document.title = `第 ${index + 1} 集 · ${s.title} · 紅果TV`;
   view.innerHTML = `
@@ -367,7 +368,39 @@ async function playPage(token, id, episodeNumber) {
     </div>`;
   episodeGrid($('#episodes'), id, total, index, (i) => `#/play/${id}/${i + 1}`);
   const video = $('#video'), stage = $('#stage'), status = $('#status');
-  const go = (i) => { if (i >= 0 && i < total) location.replace(`#/play/${id}/${i + 1}`); };
+  const go = (i) => {
+    if (i < 0 || i >= total) return;
+    if (video.webkitDisplayingFullscreen) { switchInPlace(i); return; }
+    location.replace(`#/play/${id}/${i + 1}`);
+  };
+  // iPhone 的系統全螢幕綁在這個 <video> 上：整頁重畫會換掉元素、全螢幕跟著跳出，
+  // 而 iOS 不允許程式在沒有點擊的情況下重新進全螢幕（自動連播時就回不去了）。
+  // 所以全螢幕中換集不重畫：沿用同一個 <video> 換來源，網址用 replaceState 改（不觸發 hashchange）；
+  // 離開全螢幕時存好進度再照常重畫，標題、選集列與彈幕才跟上。
+  let switchedInPlace = false;
+  function switchInPlace(i) {
+    save();
+    index = i; vid = detail.episodes[i];
+    resumeAt = 0; prefetched = false; nearEndSwitched = false; switchedInPlace = true;
+    danmaku.stop();
+    document.title = `第 ${index + 1} 集 · ${s.title} · 紅果TV`;
+    history.replaceState(null, '', `#/play/${id}/${index + 1}`);
+    load(false);
+    video.play().catch(() => {});
+  }
+  video.addEventListener('webkitendfullscreen', () => {
+    if (!switchedInPlace) return;
+    save();
+    route();
+  });
+  // iPhone 播到結尾會自動跳出系統全螢幕：全螢幕中自動連播就搶在 ended 之前換下一集。
+  let nearEndSwitched = false;
+  video.addEventListener('timeupdate', () => {
+    if (nearEndSwitched || !video.webkitDisplayingFullscreen || !store.settings.autoNext || index >= total - 1) return;
+    if (!video.duration || video.duration - video.currentTime > 0.5) return;
+    nearEndSwitched = true;
+    go(index + 1);
+  });
   video.volume = settings.volume;
   video.playbackRate = settings.rate;
 
