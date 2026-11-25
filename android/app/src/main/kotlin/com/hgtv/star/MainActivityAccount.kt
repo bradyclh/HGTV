@@ -177,10 +177,13 @@ internal fun MainActivity.applyAccount() {
     // 随后异步补一次注册（匿名）：拿到之后搜索与播放都走这同一份身份。
     repository.registerProfile=library.deviceProfile()
     repository.deviceIdentity=library.deviceIdentity()
-    // 播放身份被平台挡掉时，仓库会换一台新注册的匿名设备：新身份与新档案都要落盘，
+    repository.deviceEgdi=library.deviceEgdi()
+    // 播放身份被平台挡掉时，仓库会换一台新注册的匿名设备：新身份、新档案与 klink_egdi 都要落盘，
     // 否则下次启动又用回被挡的那台。预取用的临时仓库不挂这个回调，所以只有这里会换。
+    // 旧版本存下的身份没有 egdi，首次播放前仓库也会经由这个回调补注册一次。
     repository.onIdentityRotated={ registered,profile ->
         library.saveDeviceIdentity(registered.deviceId,registered.installId)
+        library.saveDeviceEgdi(registered.egdi)
         library.saveDeviceProfile(profile)
     }
     repository.credentials=library.account().takeIf { it.configured }
@@ -210,6 +213,7 @@ internal fun MainActivity.ensureDeviceRegistered() {
             // 注册成功后把身份重新交给仓库，并重新拉一次首页——
             // 首屏很可能已经用「没注册」的身份请求过了（App 搜索会空响应）。
             repository.deviceIdentity=library.deviceIdentity()
+            repository.deviceEgdi=library.deviceEgdi()
             if(foreground && screen=="home") showCatalog(load=true)
         }
     }
@@ -227,7 +231,9 @@ internal fun MainActivity.registerDeviceOnce(): Boolean {
         if(library.deviceRegistered()) return true
         val registered=runCatching { repository.registerDevice() }.getOrNull() ?: return false
         library.saveDeviceIdentity(registered.deviceId,registered.installId)
+        library.saveDeviceEgdi(registered.egdi)
         repository.deviceIdentity=library.deviceIdentity()
+        repository.deviceEgdi=library.deviceEgdi()
         return true
     }
 }

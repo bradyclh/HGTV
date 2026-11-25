@@ -65,8 +65,15 @@ object DeviceRegister {
         /** `new_user=1` 表示平台这次新建了一台设备。 */
         val newUser: Boolean = false,
         /** `Set-Cookie` 里可直接回写的那几项（`install_id` / `ttreq` / `store-region` …）。 */
-        val cookies: Map<String,String> = emptyMap()
+        val cookies: Map<String,String> = emptyMap(),
+        /**
+         * 注册下发的不透明设备标识 `klink_egdi`（可能为空）。2026-11-23 起播放接口按设备画像过滤，
+         * 官方播放 query 会带它（见 `player.MobilePlayerV5`），因此要随身份一起落盘。
+         */
+        val egdi: String = ""
     )
+    /** 注册后激活匿名设备的接口（官方客户端注册后必走一次，见 [ContentRepository.registerDevice]）。 */
+    const val ACTIVATE_URL = "https://log5-applog-lf.fqnovel.com/service/2/app_alert_check/"
 
     /** ttEncrypt：`MAGIC || rnd[32] || AES-128-CBC(SHA512(SHA512(rnd)+KDF_SALT) 前 32 字节, PKCS7(SHA512(data)||data))`。 */
     fun ttEncrypt(data: ByteArray): ByteArray {
@@ -131,7 +138,8 @@ object DeviceRegister {
             put("custom", org.json.JSONObject().apply {
                 put("account_region_src","fallback"); put("host_bit",64)
                 put("account_region","cn")
-                put("dragon_device_type", value("dragon_device_type","pad"))
+                // 默认按手机注册：平台对「手机」画像放行播放，TV / 平板画像常被判为不可信（N3urda/hongguoTV#119）。
+                put("dragon_device_type", value("dragon_device_type","phone"))
             })
             put("pre_installed_channel","")
             put("apk_first_install_time", now)
@@ -181,6 +189,8 @@ object DeviceRegister {
                 if(name.isNotEmpty() && value.isNotEmpty()) cookies[name] = value
             }
         }
-        return Registered(device, install, json.optString("device_token",""), json.optInt("new_user",0)==1, cookies)
+        // klink_egdi 可能直接给，也可能包一层 data（对齐 OOIUa/hongguo-android PlaybackDevice.responseEgdi）。
+        val egdi = json.optString("klink_egdi","").trim().ifEmpty { json.optJSONObject("data")?.optString("klink_egdi","")?.trim().orEmpty() }
+        return Registered(device, install, json.optString("device_token",""), json.optInt("new_user",0)==1, cookies, egdi)
     }
 }

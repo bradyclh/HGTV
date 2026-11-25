@@ -206,6 +206,11 @@ class Library(context: Context) {
         }
         sessionPrefs.edit().putString("registered-device-id",deviceId).putString("registered-install-id",installId).apply()
     }
+    /** 注册下发的 `klink_egdi`（v5 播放请求要带）；旧版本存下的身份没有，读出来是空字符串。 */
+    fun deviceEgdi(): String = sessionPrefs.getString("registered-egdi","").orEmpty()
+    fun saveDeviceEgdi(egdi: String) {
+        sessionPrefs.edit().putString("registered-egdi",egdi).apply()
+    }
     /**
      * 注册用的设备档案：机型 / 系统 / `cdid` / `openudid` …（**不含** `device_id` / `iid`）。
      *

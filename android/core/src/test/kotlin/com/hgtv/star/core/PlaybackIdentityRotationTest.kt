@@ -44,7 +44,8 @@ class PlaybackIdentityRotationTest {
             if (request.url.host == "api5-normal-hl.fqnovel.com" && request.url.encodedPath == tab) model("123") else ""
         }
         repo.stream("123")
-        assertEquals(listOf("api5-normal-sinfonlineb.fqnovel.com", "api5-normal-hl.fqnovel.com"), hosts.distinct())
+        // v5 player/v1（sinfonlinea）与 v5 video_tab（sinfonlineb）排在最前，回空后才轮到旧的 video_tab 线路。
+        assertEquals(listOf("api5-normal-sinfonlinea.fqnovel.com", "api5-normal-sinfonlineb.fqnovel.com", "api5-normal-hl.fqnovel.com"), hosts.distinct())
         hosts.clear(); now += 1_000
         repo.stream("123")
         assertEquals(listOf("api5-normal-hl.fqnovel.com"), hosts)
@@ -83,7 +84,10 @@ class PlaybackIdentityRotationTest {
         assertEquals("1111111111111111", repo.deviceIdentity["device_id"])
     }
 
-    /** 新身份也被挡时不连续狂注册：冷却 30 秒内不再换，过了冷却才再换一次。 */
+    /**
+     * 新身份也被挡时不连续狂注册：十分钟内不再换，过了冷却才再换一次。
+     * 换设备会加速消耗匿名配额（N3urda/hongguoTV#118），所以冷却要按分钟算而不是按秒。
+     */
     @Test fun rotationCoolsDownWhenTheNewIdentityIsAlsoBlocked() {
         var registrations = 0
         val repo = repository { request ->
@@ -95,12 +99,15 @@ class PlaybackIdentityRotationTest {
         now += 1_000
         assertThrows(IOException::class.java) { repo.stream("123") }
         assertEquals(1, registrations)
-        now += 30_000
+        now += 60_000
+        assertThrows(IOException::class.java) { repo.stream("123") }
+        assertEquals(1, registrations)
+        now += 600_000
         assertThrows(IOException::class.java) { repo.stream("123") }
         assertEquals(2, registrations)
     }
 
-    /** 注册失败时保留原身份，五秒后允许再试。 */
+    /** 注册失败时保留原身份，一分钟后允许再试（比换成功后的冷却短）。 */
     @Test fun failedRegistrationKeepsTheOldIdentityAndRetriesSooner() {
         var registrations = 0
         val repo = repository { request ->
@@ -113,6 +120,9 @@ class PlaybackIdentityRotationTest {
         assertFalse(called)
         assertEquals("1111111111111111", repo.deviceIdentity["device_id"])
         now += 6_000
+        assertThrows(IOException::class.java) { repo.stream("123") }
+        assertEquals(1, registrations)
+        now += 60_000
         assertThrows(IOException::class.java) { repo.stream("123") }
         assertEquals(2, registrations)
     }

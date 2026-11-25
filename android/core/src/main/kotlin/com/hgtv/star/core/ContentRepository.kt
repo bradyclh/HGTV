@@ -200,8 +200,14 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
      */
     fun inheritDevice(from: ContentRepository) {
         deviceIdentity=from.deviceIdentity
+        deviceEgdi=from.deviceEgdi
         registrationCookies=from.registrationCookies
     }
+    /**
+     * 注册下发的 `klink_egdi`（见 [DeviceRegister.Registered.egdi]），v5 播放请求带它；由界面层与身份一起落盘、注入。
+     * 空表示这份身份是旧版本注册的（没解析过 egdi），首次取播放地址前会补注册一次（见 [videoModel]）。
+     */
+    @Volatile var deviceEgdi: String = ""
     /**
      * 注册用的设备档案（机型 / 系统 / `cdid` / `openudid` …），与 [deviceIdentity] 分开存：
      * 注册要在**还没有** `device_id` 的时候发出去，注册完拿到的那对身份再交给 [deviceIdentity]。
@@ -219,6 +225,7 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         val registered=register(LinkedHashMap(registerProfile).apply { putAll(deviceIdentity) })
         if(registered!=null) {
             deviceIdentity=linkedMapOf("device_id" to registered.deviceId,"iid" to registered.installId)
+            deviceEgdi=registered.egdi
             registrationCookies=LinkedHashMap(registrationCookies).apply { putAll(registered.cookies) }
         }
         return registered
@@ -238,7 +245,23 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
                     ?: throw IOException("设备注册被服务端拒绝")
             }
         }.getOrNull()
+        registered?.let(::activate)
         return registered
+    }
+    /**
+     * 注册后立刻做一次 `app_alert_check` 激活（官方客户端流程，对齐 OOIUa/hongguo-android c0821c6f）。
+     * 未激活的匿名设备在播放接口上被当成低质量设备，回 `200 + 0 字节`。
+     * 激活失败不影响注册结果：3 秒超时，异常静默。
+     */
+    private fun activate(registered: DeviceRegister.Registered) {
+        runCatching {
+            val url=DeviceRegister.ACTIVATE_URL+"?aid=8662&app_name=novelread&channel=update_64"+
+                "&device_id=${registered.deviceId}&iid=${registered.installId}"+
+                "&device_platform=android&os=android&version_code=73932&version_name=7.3.9.32&_rticket=${clock()}"
+            val request=Request.Builder().url(url).header("User-Agent",VendorConstants.APP_UA).header("Accept","application/json").build()
+            val quick=http.newBuilder().callTimeout(3,TimeUnit.SECONDS).build()
+            quick.newCall(request).execute().close()
+        }
     }
     /** 注册下发的 Cookie（`install_id` / `ttreq` / `store-region`），随注册请求一起带上。 */
     @Volatile private var registrationCookies: Map<String,String> = emptyMap()
@@ -300,7 +323,17 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     private val LEGACY_PLAYBACK_HOST="https://api5-normal-sinfonlineb.fqnovel.com"
     private val LEGACY_SINGLE_PATH="/novel/player/video_model/v1/"
     /** 播放模型的全部候选路径（完整 URL，不含 query），顺序即默认尝试顺序。 */
-    private val PLAYBACK_ROUTES=PLAYBACK_HOSTS.map { "https://$it$VIDEO_TAB_PATH" } + listOf(
+    /**
+     * 2026-11-23 起平台按「设备可信度」过滤播放模型：画像不完整（缺 klink_egdi、query 只有二十来项、
+     * medusa 信封不是 v5 形态）的请求一律 `200 + 0 字节`，与签名算法是否正确无关，换新身份也一样空。
+     * 官方现行的是 sinfonlinea 这条 `multi_video_model/player/v1`：v5 签名（见 `player.Signer`）、
+     * 28 项设备参数、gzip 正文、版本 7.4.3.32（移植自 OOIUa/hongguo-android c0821c6f，见 `player.MobilePlayerV5`）。
+     */
+    private val VIDEO_PLAYER_PATH="/novel/player/multi_video_model/player/v1"
+    /** v5 两条路由的键（不是真实 URL：请求由 `player.MobilePlayerV5` 整个生成，含签名）。 */
+    private val V5_PLAYER_ROUTE="v5:player"
+    private val V5_TAB_ROUTE="v5:video_tab"
+    private val PLAYBACK_ROUTES=listOf(V5_PLAYER_ROUTE,V5_TAB_ROUTE) + PLAYBACK_HOSTS.map { "https://$it$VIDEO_TAB_PATH" } + listOf(
         LEGACY_SINGLE_PATH,
         "/novel/player/multi_video_model/preload/v1/",
         "/novel/player/multi_video_model/default/v1/",
@@ -331,15 +364,22 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     /** 身份代数：别的请求已经换过身份时，本请求直接用新身份，不重复注册。 */
     private var identityGeneration=0
     private val IDENTITY_ROTATE_ROUNDS=2
-    /** 换了身份仍失败后，至少隔这么久才再换；注册本身失败则隔 [ROTATION_RETRY_COOLDOWN]。 */
-    private val ROTATION_COOLDOWN=30_000L
-    private val ROTATION_RETRY_COOLDOWN=5_000L
+    /** 本进程是否已为「没有 egdi 的旧身份」补注册过（只补一次，见 [videoModel]）。 */
+    @Volatile private var egdiRefreshTried=false
+    /**
+     * 换了身份仍失败后，至少隔这么久才再换；注册本身失败则隔 [ROTATION_RETRY_COOLDOWN]。
+     *
+     * 2026-11-25 起放宽到分钟级：平台按「设备画像是否完整」过滤（见 [VIDEO_PLAYER_PATH]），
+     * 画像不完整时新身份同样回空，频繁换设备只会多注册、加速消耗匿名配额（N3urda/hongguoTV#118）。
+     */
+    private val ROTATION_COOLDOWN=600_000L
+    private val ROTATION_RETRY_COOLDOWN=60_000L
 
     /**
      * 换一台新注册的匿名设备。别的请求已换过（代数变了）时直接返回 true；
      * 没设落盘回调、有账号登录态、冷却中或注册失败时返回 false，保留原身份。
      */
-    private fun rotatePlaybackIdentity(expectedGeneration: Int): Boolean {
+    private fun rotatePlaybackIdentity(expectedGeneration: Int, force: Boolean = false): Boolean {
         val persist=onIdentityRotated ?: return false
         // 登录账号时播放请求用的是账号 Cookie 与真机档案，匿名身份换了也没用。
         if(credentials?.cookie?.isNotBlank()==true) return false
@@ -347,9 +387,10 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
             if(identityGeneration!=expectedGeneration) return true
             val now=clock()
             val cooldown=if(rotationResult==false) ROTATION_RETRY_COOLDOWN else ROTATION_COOLDOWN
-            if(rotationResult!=null && now-rotationAt in 0 until cooldown) return false
+            if(!force && rotationResult!=null && now-rotationAt in 0 until cooldown) return false
             rotationAt=now
             val profile=LinkedHashMap(registerProfile).apply {
+                this["dragon_device_type"]="phone"
                 this["cdid"]=java.util.UUID.randomUUID().toString()
                 this["openudid"]="%016x".format(kotlin.random.Random.nextLong())
             }
@@ -358,6 +399,7 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
             if(registered==null) return false
             registerProfile=profile
             deviceIdentity=linkedMapOf("device_id" to registered.deviceId,"iid" to registered.installId)
+            deviceEgdi=registered.egdi
             // 新设备的 Cookie 整份替换：旧设备的 install_id 留着只会让请求自相矛盾。
             registrationCookies=registered.cookies
             playbackRoutes=PlaybackRoutes(PLAYBACK_ROUTES)
@@ -1180,6 +1222,11 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     private fun videoModel(id: String): JSONObject {
         fun current()=synchronized(playbackIdentityLock) { Triple(playbackRoutes,identityGeneration,emptyPlaybackRounds) }
         var (routes,generation,rounds)=current()
+        // 旧版本注册的身份没有 klink_egdi（也没激活过）：本进程首次取地址前补注册一次，带上完整画像。
+        if(deviceEgdi.isBlank() && !egdiRefreshTried) {
+            egdiRefreshTried=true
+            if(rotatePlaybackIdentity(generation,force=true)) current().let { routes=it.first; generation=it.second }
+        }
         // 前几轮已判定这个身份被挡（当时在冷却里没换成）：这一轮开头先换。
         if((rounds>=IDENTITY_ROTATE_ROUNDS || routes.exhausted(clock())) && rotatePlaybackIdentity(generation))
             current().let { routes=it.first; generation=it.second }
@@ -1196,6 +1243,30 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         throw round.failure ?: IOException("播放接口暂不可用")
     }
     private class PlaybackRound(val model: JSONObject?, val failure: IOException?, val allEmpty: Boolean)
+    /**
+     * 发一次 v5 播放请求（[V5_PLAYER_ROUTE] 是 gzip POST，[V5_TAB_ROUTE] 是无正文 GET），返回响应正文。
+     * 只用匿名注册身份 + v5 签名头，**不带 Cookie**（官方 v5 形态如此）；还没注册过身份时直接失败。
+     */
+    private fun v5Request(route: String, id: String): String {
+        val deviceId=deviceIdentity["device_id"].orEmpty(); val iid=deviceIdentity["iid"].orEmpty()
+        if(!deviceId.matches(Regex("[0-9]{1,30}")) || !iid.matches(Regex("[0-9]{1,30}"))) throw IOException("播放设备尚未注册")
+        val cdid=registerProfile["cdid"]?.takeIf { it.isNotBlank() } ?: deviceProfile()["cdid"].orEmpty()
+        val egdi=deviceEgdi.takeIf { it.isNotBlank() }
+        val request=if(route==V5_PLAYER_ROUTE) {
+            val signed=com.hgtv.star.core.player.MobilePlayerV5.request(id,deviceId,iid,cdid,clock(),egdi)
+            Request.Builder().url(signed.url).apply { signed.headers.forEach { (k,v) -> header(k,v) } }
+                .post(signed.body.toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        } else {
+            val signed=com.hgtv.star.core.player.MobilePlayerV5.requestVideoTab(id,deviceId,iid,cdid,clock(),egdi)
+            Request.Builder().url(signed.url).apply { signed.headers.forEach { (k,v) -> header(k,v) } }.get().build()
+        }
+        return RequestScope.execute(http.newCall(request)) { response ->
+            if(!response.isSuccessful) throw IOException("播放请求失败（HTTP ${response.code}）")
+            val bytes=response.body?.bytes() ?: ByteArray(0)
+            if(bytes.size>2*1024*1024) throw IOException("播放信息过大")
+            String(bytes,Charsets.UTF_8)
+        }
+    }
     /** 按 [routes] 的排程把路径试一遍，第一个给得出 `video_model` 的就用；每条的结果记回健康度。 */
     private fun playbackRound(id: String, routes: PlaybackRoutes): PlaybackRound {
         val biz="""{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024}"""
@@ -1212,6 +1283,21 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
                 else -> emptyMap<String,String>() to """{"biz_param":$biz,"mixed_video_id_map":{"1004":["$id"]}}"""
             }
             var empty=false
+            if(base==V5_PLAYER_ROUTE || base==V5_TAB_ROUTE) {
+                val attempt=runCatching {
+                    val response=v5Request(base,id)
+                    if(response.isBlank()) { empty=true; throw IOException("播放接口暂不可用（空响应）") }
+                    val data=JSONObject(response)
+                    val code=data.optInt("Code",data.optInt("code",0))
+                    if(code!=0) throw IOException("播放接口暂不可用（${code}）")
+                    videoModelOf(data,id) ?: throw IOException("播放接口暂不可用（没有播放模型）")
+                }
+                attempt.getOrNull()?.let { routes.success(base,clock()); return PlaybackRound(it,null,false) }
+                routes.failed(base,clock(),empty)
+                allEmpty=allEmpty && empty
+                failure=attempt.exceptionOrNull() as? IOException ?: IOException(attempt.exceptionOrNull()?.message ?: "播放接口暂不可用")
+                continue
+            }
             val attempt=runCatching {
                 val payload=body?.toByteArray()
                 // 播放接口对**匿名设备**也放行（官方 App 冷启动未登录即可播放，见 HAR），
@@ -1255,6 +1341,8 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
     private fun videoModelOf(data: JSONObject, id: String): JSONObject? {
         val root=data.optJSONObject("data") ?: return null
         model(root.opt("video_model"))?.let { return it }
+        // v5 player/v1：`data["1004"][<vid>].video_model`（1004 = 短剧），只认这一集。
+        root.optJSONObject("1004")?.let { rows -> return model(rows.optJSONObject(id)?.opt("video_model")) }
         root.optJSONObject("video_model_data")?.let { rows ->
             // 批量形态只认这一集，避免把别的集当成本集播放。
             return model(rows.optJSONObject(id)?.opt("video_model"))

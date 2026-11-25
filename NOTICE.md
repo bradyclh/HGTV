@@ -18,7 +18,8 @@ repo 根目錄的 `LICENSE` 和上游是同一份文字，沒有改動。
 - 播放器相依套件從 `com.google.android.exoplayer` 2.19.1 改成 AndroidX Media3 1.4.1（原始碼本來就使用 Media3）；
 - `minSdk` 從 19 調到 23，移除舊版 multidex，並補上 API 24／26 的版本判斷；
 - 文件改成繁體中文（台灣用語），程式碼區塊與 API 原始資料保持原樣；
-- 播放模型改用 `GET video_tab` 介面，並移植 N3urda/hongguoTV 的路徑冷卻與匿名身分輪換（`PlaybackRoutes`）。
+- 播放模型改用 `GET video_tab` 介面，並移植 N3urda/hongguoTV 的路徑冷卻與匿名身分輪換（`PlaybackRoutes`）；
+- 移植 [OOIUa/hongguo-android](https://github.com/OOIUa/hongguo-android)（GPL-3.0-only，`62705d4f`，含 `c0821c6f` 修正）的 v5 播放簽章與裝置畫像：`android/core/src/main/kotlin/com/hgtv/star/core/player/` 下的檔案只改了 package，另補註冊後 `app_alert_check` 啟用與 `klink_egdi`。
 
 理由與細節見 [資安審查](docs/SECURITY_REVIEW.md)。
 

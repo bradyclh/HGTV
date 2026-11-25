@@ -14,10 +14,14 @@ class DeviceStoreTest {
         val file=File(Files.createTempDirectory("hgtv-device").toFile(),"device.json")
         val store=DeviceStore(file)
         store.profile()
-        store.rotated("7000000000000001","8000000000000001",mapOf("cdid" to "new-cdid","openudid" to "00000000000000ab"))
+        store.rotated("7000000000000001","8000000000000001",mapOf("cdid" to "new-cdid","openudid" to "00000000000000ab"),"egdi-1")
         val reopened=DeviceStore(file)
         assertEquals(mapOf("device_id" to "7000000000000001","iid" to "8000000000000001"),reopened.identity())
         assertEquals("new-cdid",reopened.profile()["cdid"])
+        assertEquals("egdi-1",reopened.egdi())
+        val repository=ContentRepository()
+        reopened.apply(repository)
+        assertEquals("egdi-1",repository.deviceEgdi)
     }
 
     /** apply 會把落盤回呼掛到倉庫上，倉庫換身分時才寫得回來。 */

@@ -42,18 +42,23 @@ class DeviceStore(private val file: File) {
     @Synchronized fun apply(repository: ContentRepository): Boolean {
         repository.registerProfile=profile()
         repository.deviceIdentity=identity()
+        repository.deviceEgdi=egdi()
         // 播放身分被平台擋掉時倉庫會換一台新註冊的裝置（見 ContentRepository.onIdentityRotated），
-        // 新身分與新檔案都要落盤，否則重開伺服器又用回被擋的那台。
-        repository.onIdentityRotated={ registered,profile -> rotated(registered.deviceId,registered.installId,profile) }
+        // 新身分、新檔案與 klink_egdi 都要落盤，否則重開伺服器又用回被擋的那台。
+        repository.onIdentityRotated={ registered,profile -> rotated(registered.deviceId,registered.installId,profile,registered.egdi) }
         if(identity().isNotEmpty()) return true
         val registered=runCatching { repository.registerDevice() }.getOrNull() ?: return false
-        json.put("device_id",registered.deviceId).put("iid",registered.installId); save()
+        json.put("device_id",registered.deviceId).put("iid",registered.installId).put("egdi",registered.egdi); save()
         repository.deviceIdentity=identity()
+        repository.deviceEgdi=egdi()
         return true
     }
 
-    @Synchronized fun rotated(deviceId: String, installId: String, profile: Map<String,String>) {
-        json.put("device_id",deviceId).put("iid",installId).put("profile",JSONObject(profile as Map<*,*>)); save()
+    /** 註冊下發的 `klink_egdi`；舊版本存下的身分沒有這一項（空字串）。 */
+    fun egdi(): String=json.optString("egdi")
+
+    @Synchronized fun rotated(deviceId: String, installId: String, profile: Map<String,String>, egdi: String="") {
+        json.put("device_id",deviceId).put("iid",installId).put("egdi",egdi).put("profile",JSONObject(profile as Map<*,*>)); save()
     }
 
     private fun save() {
