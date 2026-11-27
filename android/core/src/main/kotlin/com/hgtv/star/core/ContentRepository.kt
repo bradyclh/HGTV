@@ -1062,14 +1062,59 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
         require(id.matches(Regex("[0-9]{1,30}")))
         val html=text("$site/detail?series_id=$id")
         val o=extractRouter(html).getJSONObject("loaderData").optJSONObject("detail_page")?.optJSONObject("seriesDetail") ?: throw IOException("剧集详情暂不可用")
-        val raw=o.optJSONArray("vid_list") ?: throw IOException("分集暂不可用")
-        val episodes=(0 until raw.length()).map { raw.getString(it) }
-        if(episodes.isEmpty() || episodes.any { !it.matches(Regex("[0-9]{1,30}")) } || episodes.distinct().size!=episodes.size) throw IOException("分集数据异常")
+        // 官网目录只剩 3 个混淆预览 ID 时（2026-11-27 起），改从 App 目录接口取完整分集。
+        val expected=EpisodeDirectory.expectedCount(o)
+        val episodes=EpisodeDirectory.fromWeb(o) ?: try { directoryEpisodes(id,expected) } catch(directory: IOException) {
+            try { videoDetailEpisodes(id,expected) } catch(detail: IOException) { detail.addSuppressed(directory); throw detail }
+        }
         // 简介页下方那一栏不在这里取：它是 App 详情页的「相关作品」cell
         // （`GET /reading/bookapi/plan/v:version/`，见 [related]），要额外发一次请求，
         // 挂在详情上会让每次进简介页都多等一个 RTT。界面在详情上屏之后后台预取。
         return Detail(card(o).copy(id=id),episodes)
     }
+    /**
+     * 完整分集目录：`GET https://{线路}/reading/bookapi/directory/all_items/v/?book_id={剧集 ID}`。
+     * 只用浏览签名（内置设备档案），不需要登录或播放设备注册。
+     * 平台偶尔回 200 + 空响应体，所以换线重发，轮完 [directoryHosts] 两圈才放弃。
+     */
+    private fun directoryEpisodes(id: String, expectedCount: Int): List<String> {
+        var failure: IOException?=null
+        for(attempt in 0 until directoryHosts.size*2) {
+            val host=directoryHosts[attempt%directoryHosts.size]
+            try {
+                val signed=signer.sign("https://$host/reading/bookapi/directory/all_items/v/",
+                    VendorConstants.device+mapOf("book_id" to id,"need_version" to "true"))
+                return EpisodeDirectory.parse(text(signed.url,signed),expectedCount)
+            } catch(e: IOException) {
+                failure=e
+            }
+        }
+        throw IOException("完整分集暂不可用（${failure?.message.orEmpty()}），请稍后重试",failure)
+    }
+    private val directoryHosts=listOf("api5-normal-sinfonlinea.fqnovel.com","api5-normal-sinfonlineb.fqnovel.com")
+    /**
+     * 备援分集来源：`/novel/player/video_detail/v1/?series_id={剧集 ID}`，回 `data.video_data.video_list[]`。
+     * 真人剧 / AI 剧在目录接口上常回 101104「该书不存在」，这条仍给得出完整分集。
+     * POST 空 JSON 偶尔回 200 + 0 字节，此时改 GET 再问一次（签名不覆盖方法）。
+     */
+    private fun videoDetailEpisodes(id: String, expectedCount: Int): List<String> {
+        var failure: IOException?=null
+        for(host in directoryHosts) {
+            val values=appValues().apply { put("series_id",id) }
+            try {
+                val base="https://$host/novel/player/video_detail/v1/"
+                val post=signer.sign(base,values,JSONObject().toString().toByteArray())
+                val raw=text(post.url,post.withSession()).ifBlank {
+                    val get=signer.sign(base,values); text(get.url,get.withSession())
+                }
+                return EpisodeDirectory.parseVideoDetail(raw,expectedCount)
+            } catch(e: IOException) {
+                failure=e
+            }
+        }
+        throw failure ?: IOException("剧集详情暂不可用")
+    }
+
     /**
      * 相关作品：App 详情页「相关作品」那一栏的内容，**一次请求拿全**（替代原先那套
      * 「官网搜索 + 沿季号逐季搜 + 扫 6 页片库目录」的召回：实测 2~4s、还要二十多次请求）。

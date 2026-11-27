@@ -98,6 +98,22 @@ fun main(args: Array<String>) {
         }
         return
     }
+    if(args.contains("--verify-directory")) {
+        // 分集目录联调：官网只给 3 个混淆 ID 后，逐部验证 App 目录接口能拿全分集。
+        try {
+            val ids=args.filter { it.matches(Regex("[0-9]{1,30}")) }.ifEmpty { repository.homeFeed().values.flatMap { it.items.take(4) }.map { it.id }.distinct() }
+            var passed=0
+            for(id in ids) {
+                runCatching { repository.detail(id) }
+                    .onSuccess { passed++; println("ok   $id ${it.series.title} episodes=${it.episodes.size}") }
+                    .onFailure { println("fail $id ${it.message}") }
+            }
+            println("directory $passed/${ids.size}")
+        } finally {
+            repository.http.connectionPool.evictAll(); repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
     if(args.contains("--hot")) {
         // 热搜词联调：种子词各问一次联想接口，收集「不是某一部剧」的那些词。
         try {
